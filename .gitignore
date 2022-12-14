@@ -6,3 +6,6 @@
 *.exe
 *.o
 .cache
+
+build.sh
+rebuild.sh
