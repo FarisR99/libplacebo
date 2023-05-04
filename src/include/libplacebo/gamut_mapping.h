@@ -79,12 +79,12 @@ struct pl_gamut_map_params {
 #define pl_gamut_map_params(...) (&(struct pl_gamut_map_params) { __VA_ARGS__ })
 
 // Note: Only does pointer equality testing on `function`
-PL_API bool pl_gamut_map_params_equal(const struct pl_gamut_map_params *a,
-                                      const struct pl_gamut_map_params *b);
+bool pl_gamut_map_params_equal(const struct pl_gamut_map_params *a,
+                               const struct pl_gamut_map_params *b);
 
 // Returns true if the given gamut mapping configuration effectively represents
 // a no-op configuration. Gamut mapping can be skipped in this case.
-PL_API bool pl_gamut_map_params_noop(const struct pl_gamut_map_params *params);
+bool pl_gamut_map_params_noop(const struct pl_gamut_map_params *params);
 
 // Generate a gamut-mapping LUT for a given configuration. LUT samples are
 // stored as IPTPQc4 values, but the LUT itself is indexed by IChPQc4,spanning
@@ -92,54 +92,54 @@ PL_API bool pl_gamut_map_params_noop(const struct pl_gamut_map_params *params);
 //
 // This ordering is designed to keep frequently co-occurring values close in
 // memory, while permitting simple wrapping of the 'h' component.
-PL_API void pl_gamut_map_generate(float *out, const struct pl_gamut_map_params *params);
+void pl_gamut_map_generate(float *out, const struct pl_gamut_map_params *params);
 
 // Samples a gamut mapping function for a single IPTPQc4 value. The input
 // values are updated in-place.
-PL_API void pl_gamut_map_sample(float x[3], const struct pl_gamut_map_params *params);
+void pl_gamut_map_sample(float x[3], const struct pl_gamut_map_params *params);
 
 // Performs no gamut-mapping, just hard clips out-of-range colors per-channel.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_clip;
+extern const struct pl_gamut_map_function pl_gamut_map_clip;
 
 // Performs a perceptually balanced, colorimetric gamut mapping using a soft
 // knee function to roll-off clipped regions.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_perceptual;
+extern const struct pl_gamut_map_function pl_gamut_map_perceptual;
 
 // Performs relative colorimetric clipping, while maintaining an exponential
 // relationship between brightness and chromaticity.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_relative;
+extern const struct pl_gamut_map_function pl_gamut_map_relative;
 
 // Performs simple RGB->RGB saturation mapping. The input R/G/B channels are
 // mapped directly onto the output R/G/B channels. Will never clip, but will
 // distort all hues and/or result in a faded look.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_saturation;
+extern const struct pl_gamut_map_function pl_gamut_map_saturation;
 
 // Performs absolute colorimetric clipping. Like pl_gamut_map_relative, but
 // does not adapt the white point.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_absolute;
+extern const struct pl_gamut_map_function pl_gamut_map_absolute;
 
 // Performs constant-luminance colorimetric clipping, desaturing colors
 // towards white until they're in-range.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_desaturate;
+extern const struct pl_gamut_map_function pl_gamut_map_desaturate;
 
 // Uniformly darkens the input slightly to prevent clipping on blown-out
 // highlights, then clamps colorimetrically to the input gamut boundary,
 // biased slightly to preserve chromaticity over luminance.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_darken;
+extern const struct pl_gamut_map_function pl_gamut_map_darken;
 
 // Performs no gamut mapping, but simply highlights out-of-gamut pixels.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_highlight;
+extern const struct pl_gamut_map_function pl_gamut_map_highlight;
 
 // Linearly/uniformly desaturates the image in order to bring the entire
 // image into the target gamut.
-PL_API extern const struct pl_gamut_map_function pl_gamut_map_linear;
+extern const struct pl_gamut_map_function pl_gamut_map_linear;
 
 // A list of built-in gamut mapping functions, terminated by NULL
-PL_API extern const struct pl_gamut_map_function * const pl_gamut_map_functions[];
-PL_API extern const int pl_num_gamut_map_functions; // excluding trailing NULL
+extern const struct pl_gamut_map_function * const pl_gamut_map_functions[];
+extern const int pl_num_gamut_map_functions; // excluding trailing NULL
                                              //
 // Find the gamut mapping function with the given name, or NULL on failure.
-PL_API const struct pl_gamut_map_function *pl_find_gamut_map_function(const char *name);
+const struct pl_gamut_map_function *pl_find_gamut_map_function(const char *name);
 
 PL_API_END
 

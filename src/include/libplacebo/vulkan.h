@@ -92,14 +92,14 @@ struct pl_vk_inst_params {
 };
 
 #define pl_vk_inst_params(...) (&(struct pl_vk_inst_params) { __VA_ARGS__ })
-PL_API extern const struct pl_vk_inst_params pl_vk_inst_default_params;
+extern const struct pl_vk_inst_params pl_vk_inst_default_params;
 
 // Helper function to simplify instance creation. The user could also bypass
 // these helpers and do it manually, but this function is provided as a
 // convenience. It also sets up a debug callback which forwards all vulkan
 // messages to the `pl_log` callback.
-PL_API pl_vk_inst pl_vk_inst_create(pl_log log, const struct pl_vk_inst_params *params);
-PL_API void pl_vk_inst_destroy(pl_vk_inst *inst);
+pl_vk_inst pl_vk_inst_create(pl_log log, const struct pl_vk_inst_params *params);
+void pl_vk_inst_destroy(pl_vk_inst *inst);
 
 struct pl_vulkan_queue {
     uint32_t index; // Queue family index
@@ -268,7 +268,7 @@ struct pl_vulkan_params {
     .queue_count    = 1,
 
 #define pl_vulkan_params(...) (&(struct pl_vulkan_params) { PL_VULKAN_DEFAULTS __VA_ARGS__ })
-PL_API extern const struct pl_vulkan_params pl_vulkan_default_params;
+extern const struct pl_vulkan_params pl_vulkan_default_params;
 
 // Creates a new vulkan device based on the given parameters and initializes
 // a new GPU. This function will internally initialize a VkDevice. There is
@@ -276,7 +276,7 @@ PL_API extern const struct pl_vulkan_params pl_vulkan_default_params;
 // left as NULL, it defaults to &pl_vulkan_default_params.
 //
 // Thread-safety: Safe
-PL_API pl_vulkan pl_vulkan_create(pl_log log, const struct pl_vulkan_params *params);
+pl_vulkan pl_vulkan_create(pl_log log, const struct pl_vulkan_params *params);
 
 // Destroys the vulkan device and all associated objects, except for the
 // VkInstance provided by the user.
@@ -288,11 +288,11 @@ PL_API pl_vulkan pl_vulkan_create(pl_log log, const struct pl_vulkan_params *par
 // Also note that this function will block until all in-flight GPU commands are
 // finished processing. You can avoid this by manually calling `pl_gpu_finish`
 // before `pl_vulkan_destroy`.
-PL_API void pl_vulkan_destroy(pl_vulkan *vk);
+void pl_vulkan_destroy(pl_vulkan *vk);
 
 // For a `pl_gpu` backed by `pl_vulkan`, this function can be used to retrieve
 // the underlying `pl_vulkan`. Returns NULL for any other type of `gpu`.
-PL_API pl_vulkan pl_vulkan_get(pl_gpu gpu);
+pl_vulkan pl_vulkan_get(pl_gpu gpu);
 
 struct pl_vulkan_device_params {
     // The instance to use. Required!
@@ -314,7 +314,7 @@ struct pl_vulkan_device_params {
 // Helper function to choose the best VkPhysicalDevice, given a VkInstance.
 // This uses the same logic as `pl_vulkan_create` uses internally. If no
 // matching device was found, this returns VK_NULL_HANDLE.
-PL_API VkPhysicalDevice pl_vulkan_choose_device(pl_log log,
+VkPhysicalDevice pl_vulkan_choose_device(pl_log log,
                               const struct pl_vulkan_device_params *params);
 
 struct pl_vulkan_swapchain_params {
@@ -355,13 +355,13 @@ struct pl_vulkan_swapchain_params {
 // function requires that the vulkan device was created with the
 // VK_KHR_swapchain extension. The easiest way of accomplishing this is to set
 // the `pl_vulkan_params.surface` explicitly at creation time.
-PL_API pl_swapchain pl_vulkan_create_swapchain(pl_vulkan vk,
+pl_swapchain pl_vulkan_create_swapchain(pl_vulkan vk,
                               const struct pl_vulkan_swapchain_params *params);
 
 // This will return true if the vulkan swapchain is internally detected
 // as being suboptimal (VK_SUBOPTIMAL_KHR). This might be of use to clients
 // who have `params->allow_suboptimal` enabled.
-PL_API bool pl_vulkan_swapchain_suboptimal(pl_swapchain sw);
+bool pl_vulkan_swapchain_suboptimal(pl_swapchain sw);
 
 // Vulkan interop API, for sharing a single VkDevice (and associated vulkan
 // resources) directly with the API user. The use of this API is a bit sketchy
@@ -434,9 +434,9 @@ struct pl_vulkan_import_params {
 // Note: This also includes physical device features provided by extensions.
 // They are all provided using extension-specific features structs, rather
 // than the more general purpose VkPhysicalDeviceVulkan11Features etc.
-PL_API extern const char * const pl_vulkan_recommended_extensions[];
-PL_API extern const int pl_vulkan_num_recommended_extensions;
-PL_API extern const VkPhysicalDeviceFeatures2 pl_vulkan_recommended_features;
+extern const char * const pl_vulkan_recommended_extensions[];
+extern const int pl_vulkan_num_recommended_extensions;
+extern const VkPhysicalDeviceFeatures2 pl_vulkan_recommended_features;
 
 // A list of device features that are required by libplacebo. These
 // *must* be provided by imported Vulkan devices.
@@ -448,7 +448,7 @@ extern const VkPhysicalDeviceFeatures2 pl_vulkan_required_features;
 // a `pl_vulkan` abstraction. It's safe to `pl_vulkan_destroy` this, which will
 // destroy application state related to libplacebo but leave the underlying
 // VkDevice intact.
-PL_API pl_vulkan pl_vulkan_import(pl_log log, const struct pl_vulkan_import_params *params);
+pl_vulkan pl_vulkan_import(pl_log log, const struct pl_vulkan_import_params *params);
 
 struct pl_vulkan_wrap_params {
     // The image itself. It *must* be usable concurrently by all of the queue
@@ -503,7 +503,25 @@ struct pl_vulkan_wrap_params {
 // `gpu`.
 //
 // This function may fail, in which case it returns NULL.
-PL_API pl_tex pl_vulkan_wrap(pl_gpu gpu, const struct pl_vulkan_wrap_params *params);
+pl_tex pl_vulkan_wrap(pl_gpu gpu, const struct pl_vulkan_wrap_params *params);
+
+// For purely informative reasons, this contains a list of extensions and
+// device features that libplacebo *can* make use of. These are all strictly
+// optional, but provide a hint to the API user as to what might be worth
+// enabling at device creation time.
+//
+// Note: This also includes physical device features provided by extensions.
+// They are all provided using extension-specific features structs, rather
+// than the more general purpose VkPhysicalDeviceVulkan11Features etc.
+extern const char * const pl_vulkan_recommended_extensions[];
+extern const int pl_vulkan_num_recommended_extensions;
+extern const VkPhysicalDeviceFeatures2 pl_vulkan_recommended_features;
+
+// A list of device features that are required by libplacebo. These
+// *must* be provided by imported Vulkan devices.
+//
+// Note: `pl_vulkan_recommended_features` does not include this list.
+extern const VkPhysicalDeviceFeatures2 pl_vulkan_required_features;
 
 // Analogous to `pl_vulkan_wrap`, this function takes any `pl_tex` (including
 // ones created by `pl_tex_create`) and unwraps it to expose the underlying
@@ -513,8 +531,8 @@ PL_API pl_tex pl_vulkan_wrap(pl_gpu gpu, const struct pl_vulkan_wrap_params *par
 //
 // `out_format` and `out_flags` will be updated to hold the VkImage's
 // format and usage flags. (Optional)
-PL_API VkImage pl_vulkan_unwrap(pl_gpu gpu, pl_tex tex,
-                                VkFormat *out_format, VkImageUsageFlags *out_flags);
+VkImage pl_vulkan_unwrap(pl_gpu gpu, pl_tex tex,
+                         VkFormat *out_format, VkImageUsageFlags *out_flags);
 
 // Represents a vulkan semaphore/value pair (for compatibility with timeline
 // semaphores). When using normal, binary semaphores, `value` may be ignored.
@@ -550,7 +568,7 @@ struct pl_vulkan_hold_params {
 
 // "Hold" a shared image, transferring control over the image to the user.
 // Returns whether successful.
-PL_API bool pl_vulkan_hold_ex(pl_gpu gpu, const struct pl_vulkan_hold_params *params);
+bool pl_vulkan_hold_ex(pl_gpu gpu, const struct pl_vulkan_hold_params *params);
 
 struct pl_vulkan_release_params {
     // The image to be released. It must be marked as "held". Performing any
@@ -592,7 +610,7 @@ struct pl_vulkan_release_params {
 #define pl_vulkan_release_params(...) (&(struct pl_vulkan_release_params) { __VA_ARGS__ })
 
 // "Release" a shared image, transferring control to libplacebo.
-PL_API void pl_vulkan_release_ex(pl_gpu gpu, const struct pl_vulkan_release_params *params);
+void pl_vulkan_release_ex(pl_gpu gpu, const struct pl_vulkan_release_params *params);
 
 struct pl_vulkan_sem_params {
     // The type of semaphore to create.
@@ -618,16 +636,16 @@ struct pl_vulkan_sem_params {
 
 // Helper functions to create and destroy vulkan semaphores. Returns
 // VK_NULL_HANDLE on failure.
-PL_API VkSemaphore pl_vulkan_sem_create(pl_gpu gpu, const struct pl_vulkan_sem_params *params);
-PL_API void pl_vulkan_sem_destroy(pl_gpu gpu, VkSemaphore *semaphore);
+VkSemaphore pl_vulkan_sem_create(pl_gpu gpu, const struct pl_vulkan_sem_params *params);
+void pl_vulkan_sem_destroy(pl_gpu gpu, VkSemaphore *semaphore);
 
 // Backwards-compatibility wrappers for older versions of the API.
-PL_DEPRECATED PL_API bool pl_vulkan_hold(pl_gpu gpu, pl_tex tex, VkImageLayout layout,
-                                         pl_vulkan_sem sem_out);
-PL_DEPRECATED PL_API bool pl_vulkan_hold_raw(pl_gpu gpu, pl_tex tex, VkImageLayout *out_layout,
-                                             pl_vulkan_sem sem_out);
-PL_DEPRECATED PL_API void pl_vulkan_release(pl_gpu gpu, pl_tex tex, VkImageLayout layout,
-                                            pl_vulkan_sem sem_in);
+PL_DEPRECATED bool pl_vulkan_hold(pl_gpu gpu, pl_tex tex, VkImageLayout layout,
+                                  pl_vulkan_sem sem_out);
+PL_DEPRECATED bool pl_vulkan_hold_raw(pl_gpu gpu, pl_tex tex, VkImageLayout *out_layout,
+                                      pl_vulkan_sem sem_out);
+PL_DEPRECATED void pl_vulkan_release(pl_gpu gpu, pl_tex tex, VkImageLayout layout,
+                                     pl_vulkan_sem sem_in);
 
 PL_API_END
 
