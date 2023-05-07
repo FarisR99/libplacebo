@@ -313,10 +313,14 @@ static bool check_required_features(struct vk_ctx *vk)
         }                                                                       \
     } while (0)
 
-    CHECK_FEATURE(1, 3, dynamicRendering);
-    CHECK_FEATURE(1, 3, synchronization2);
-    CHECK_FEATURE(1, 2, hostQueryReset);
-    CHECK_FEATURE(1, 2, timelineSemaphore);
+    if (vk->api_ver >= VK_API_VERSION_1_3) {
+        CHECK_FEATURE(1, 3, dynamicRendering);
+        CHECK_FEATURE(1, 3, synchronization2);
+    }
+    if (vk->api_ver >= VK_API_VERSION_1_2) {
+        CHECK_FEATURE(1, 2, hostQueryReset);
+        CHECK_FEATURE(1, 2, timelineSemaphore);
+    }
 
     #undef CHECK_FEATURE
     return true;
