@@ -221,6 +221,7 @@ struct vk_ctx {
     PL_VK_FUN(TransitionImageLayoutEXT);
     PL_VK_FUN(UpdateDescriptorSets);
     PL_VK_FUN(WaitSemaphores);
+    PL_VK_FUN(GetSemaphoreCounterValue);
     PL_VK_FUN(WaitForFences);
 
 #ifdef PL_HAVE_WIN32

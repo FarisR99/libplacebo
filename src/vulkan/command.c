@@ -25,6 +25,16 @@ static VkResult vk_sync_poll(struct vk_ctx *vk, VkFence fence,
     if (fence)
         return vk->WaitForFences(vk->dev, 1, &fence, VK_TRUE, timeout);
 
+    if (!timeout) {
+        // Reading the counter is much cheaper than a zero-timeout wait on
+        // some platforms (e.g. NVIDIA on Windows), and polling is frequent
+        uint64_t value;
+        VkResult res = vk->GetSemaphoreCounterValue(vk->dev, sync.sem, &value);
+        if (res != VK_SUCCESS)
+            return res;
+        return value >= sync.value ? VK_SUCCESS : VK_TIMEOUT;
+    }
+
     return vk->WaitSemaphores(vk->dev, &(VkSemaphoreWaitInfo) {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
         .semaphoreCount = 1,

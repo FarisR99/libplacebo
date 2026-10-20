@@ -453,6 +453,7 @@ static const struct vk_fun vk_dev_funs[] = {
     PL_VK_DEV_FUN(SetDebugUtilsObjectNameEXT),
     PL_VK_DEV_FUN(UpdateDescriptorSets),
     PL_VK_DEV_FUN(WaitSemaphores),
+    PL_VK_DEV_FUN(GetSemaphoreCounterValue),
     PL_VK_DEV_FUN(WaitForFences),
 };
 
