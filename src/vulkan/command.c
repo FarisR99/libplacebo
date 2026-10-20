@@ -622,6 +622,26 @@ bool vk_poll_commands(struct vk_ctx *vk, uint64_t timeout)
     return ret;
 }
 
+bool vk_cmds_busy(struct vk_ctx *vk)
+{
+    pl_mutex_lock(&vk->lock);
+    if (!vk->cmds_pending.num) {
+        pl_mutex_unlock(&vk->lock);
+        return false;
+    }
+
+    struct vk_cmd *cmd = vk->cmds_pending.elem[vk->cmds_pending.num - 1];
+    pl_vulkan_sem sync = cmd->sync;
+    VkFence fence = cmd->fence;
+    cmd->waiters++;
+    pl_mutex_unlock(&vk->lock); // don't hold mutex while polling
+    VkResult res = vk_sync_poll(vk, fence, sync, 0);
+    pl_mutex_lock(&vk->lock);
+    cmd->waiters--;
+    pl_mutex_unlock(&vk->lock);
+    return res == VK_TIMEOUT;
+}
+
 void vk_rotate_queues(struct vk_ctx *vk)
 {
     pl_mutex_lock(&vk->lock);

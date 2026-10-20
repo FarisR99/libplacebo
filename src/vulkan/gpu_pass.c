@@ -820,6 +820,8 @@ void vk_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
         // Wait for a free descriptor set
         while (!pass_vk->dmask) {
             PL_TRACE(gpu, "No free descriptor sets! ...blocking (slow path)");
+            // The sets may be held by passes recorded but not yet submitted
+            CMD_SUBMIT(NULL);
             vk_poll_commands(vk, 10000000); // 10 ms
         }
     }
@@ -981,8 +983,16 @@ void vk_pass_run(pl_gpu gpu, const struct pl_pass_run_params *params)
     for (int i = 0; i < pass->params.num_descriptors; i++)
         vk_release_descriptor(gpu, cmd, pass, params->desc_bindings[i], i);
 
-    // submit this command buffer for better intra-frame granularity
-    CMD_SUBMIT(&cmd);
+    // Submit this command buffer for better intra-frame granularity, but only
+    // if the GPU would otherwise idle. While earlier work is still executing,
+    // keep recording instead: a submission costs more CPU time than many
+    // passes take to run, which limits throughput for shaders with many
+    // passes, e.g. mpv user shaders.
+    if (vk_cmds_busy(vk)) {
+        CMD_FINISH(&cmd);
+    } else {
+        CMD_SUBMIT(&cmd);
+    }
 
 error:
     return;

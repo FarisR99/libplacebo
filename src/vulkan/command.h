@@ -143,6 +143,10 @@ bool vk_cmd_submit(struct vk_cmd **cmd);
 // never flushed!
 bool vk_poll_commands(struct vk_ctx *vk, uint64_t timeout);
 
+// Returns whether the most recently submitted command is still executing, i.e.
+// whether the GPU has queued work. Does not process any callbacks.
+bool vk_cmds_busy(struct vk_ctx *vk);
+
 // Rotate through queues in each command pool. Call this once per frame, after
 // submitting all of the command buffers for that frame. Calling this more
 // often than that is possible but bad for performance.
