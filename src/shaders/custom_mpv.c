@@ -936,6 +936,8 @@ struct hook_priv {
     // State for PRNG/frame count
     int frame_count;
     uint64_t prng_state[4];
+
+    bool half_precision;
 };
 
 static void hook_reset(void *priv)
@@ -1140,7 +1142,7 @@ static double prng_step(uint64_t s[4])
 static bool bind_pass_tex(pl_shader sh, pl_str name,
                           const struct pass_tex *ptex,
                           const pl_rect2df *rect,
-                          bool hooked, bool mainpresub)
+                          bool hooked, bool mainpresub, ident_t half)
 {
     ident_t id, pos, pt;
 
@@ -1170,14 +1172,24 @@ static bool bind_pass_tex(pl_shader sh, pl_str name,
     // Compatibility with mpv
     GLSLH("#define %.*s_rot mat2(1.0, 0.0, 0.0, 1.0) \n", PL_STR_FMT(name));
 
-    // Sampling function boilerplate
-    GLSLH("#define %.*s_tex(pos) ("$" * vec4(textureLod("$", pos, 0.0))) \n",
-          PL_STR_FMT(name), scale, id);
+    // Sampling function boilerplate. For half precision, samples pass through
+    // a mediump function: `scale` is a highp constant, and would otherwise keep
+    // all the math on the samples at full precision.
+    if (half) {
+        GLSLH("#define %.*s_tex(pos) ("$"("$" * vec4(textureLod("$", pos, 0.0)))) \n",
+              PL_STR_FMT(name), half, scale, id);
+    } else {
+        GLSLH("#define %.*s_tex(pos) ("$" * vec4(textureLod("$", pos, 0.0))) \n",
+              PL_STR_FMT(name), scale, id);
+    }
     GLSLH("#define %.*s_texOff(off) (%.*s_tex("$" + "$" * vec2(off))) \n",
           PL_STR_FMT(name), PL_STR_FMT(name), pos, pt);
 
     bool can_gather = ptex->tex->params.format->gatherable;
-    if (can_gather) {
+    if (can_gather && half) {
+        GLSLH("#define %.*s_gather(pos, c) ("$"("$" * vec4(textureGather("$", pos, c)))) \n",
+              PL_STR_FMT(name), half, scale, id);
+    } else if (can_gather) {
         GLSLH("#define %.*s_gather(pos, c) ("$" * vec4(textureGather("$", pos, c))) \n",
               PL_STR_FMT(name), scale, id);
     }
@@ -1279,6 +1291,12 @@ static struct pl_hook_res hook_hook(void *priv, const struct pl_hook_params *par
         // Generate a new shader object
         sh = pl_dispatch_begin(params->dispatch);
 
+        ident_t half = NULL_IDENT;
+        if (p->half_precision) {
+            half = sh_fresh(sh, "half");
+            GLSLH("mediump vec4 "$"(mediump vec4 v) { return v; } \n", half);
+        }
+
         // Bind all necessary input textures
         for (int i = 0; i < PL_ARRAY_SIZE(hook->bind_tex); i++) {
             pl_str texname = hook->bind_tex[i];
@@ -1341,7 +1359,7 @@ static struct pl_hook_res hook_hook(void *priv, const struct pl_hook_params *par
                     }
 
                     if (!bind_pass_tex(sh, texname, &p->pass_textures.elem[j],
-                                       &rect, hooked, mainpresub))
+                                       &rect, hooked, mainpresub, half))
                     {
                         goto error;
                     }
@@ -1453,6 +1471,8 @@ static struct pl_hook_res hook_hook(void *priv, const struct pl_hook_params *par
         GLSLH("#define delinearize "$" \n", sh_subpass(sh, p->trc_helper));
 
         // Load and run the user shader itself
+        if (p->half_precision)
+            GLSLH("precision mediump float; \n");
         sh_append_str(sh, SH_BUF_HEADER, hook->pass_body);
         sh_describef(sh, "%.*s", PL_STR_FMT(hook->pass_desc));
 
@@ -1595,6 +1615,14 @@ const struct pl_hook *pl_mpv_user_shader_parse(pl_gpu gpu,
                                                const char *shader_text,
                                                size_t shader_len)
 {
+    return pl_mpv_user_shader_parse_params(gpu, shader_text, shader_len, NULL);
+}
+
+const struct pl_hook *
+pl_mpv_user_shader_parse_params(pl_gpu gpu, const char *shader_text,
+                                size_t shader_len,
+                                const struct pl_mpv_user_shader_params *params)
+{
     if (!shader_len)
         return NULL;
 
@@ -1608,7 +1636,7 @@ const struct pl_hook *pl_mpv_user_shader_parse(pl_gpu gpu,
         .priv = p,
         .reset = hook_reset,
         .hook = hook_hook,
-        .signature = pl_str_hash(shader),
+        .signature = pl_str_hash(shader) ^ (params && params->half_precision),
     };
 
     *p = (struct hook_priv) {
@@ -1621,6 +1649,7 @@ const struct pl_hook *pl_mpv_user_shader_parse(pl_gpu gpu,
             0xb76d71f9443c228allu, 0x93a02092fc4807e8llu,
             0x06d81748f838bd07llu, 0x9381ee129dddce6cllu,
         },
+        .half_precision = params && params->half_precision,
     };
 
     shader = pl_strdup(hook, shader);

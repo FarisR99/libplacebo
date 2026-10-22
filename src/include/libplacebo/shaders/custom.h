@@ -334,6 +334,23 @@ struct pl_hook {
 PL_API const struct pl_hook *
 pl_mpv_user_shader_parse(pl_gpu gpu, const char *shader_text, size_t shader_len);
 
+struct pl_mpv_user_shader_params {
+    // Run the shader's own code at reduced precision, by declaring
+    // `precision mediump float;` at the start of every pass. Drivers may then
+    // use 16-bit floats, which some GPUs (e.g. Intel integrated graphics)
+    // compute at twice the rate; on others this gains nothing. Only enable this
+    // for shaders that tolerate 16-bit intermediate values.
+    bool half_precision;
+};
+
+#define pl_mpv_user_shader_params(...) (&(struct pl_mpv_user_shader_params) { __VA_ARGS__ })
+
+// Like `pl_mpv_user_shader_parse`, with extra parameters. `params` may be NULL.
+PL_API const struct pl_hook *
+pl_mpv_user_shader_parse_params(pl_gpu gpu, const char *shader_text,
+                                size_t shader_len,
+                                const struct pl_mpv_user_shader_params *params);
+
 PL_API void pl_mpv_user_shader_destroy(const struct pl_hook **hook);
 
 PL_API_END
