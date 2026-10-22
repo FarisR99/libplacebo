@@ -61,6 +61,9 @@ struct entry {
 // Maximum number of not-yet-mapped frames to allow queueing in advance
 #define PREFETCH_FRAMES 2
 
+// Epsilon for comparing PTS values against derived the EOF timestamp.
+#define PTS_EPS 1e-6
+
 struct pool {
     double samples[MAX_SAMPLES];
     double estimate;
@@ -90,6 +93,7 @@ struct pl_queue_t {
     PL_ARRAY(struct entry *) queue;
     uint64_t signature;
     int threshold_frames;
+    int total_fields; // source fields ever seen
     bool want_frame;
     bool eof;
 
@@ -121,10 +125,10 @@ pl_queue pl_queue_create(pl_gpu gpu)
     pl_mutex_init(&p->lock_weak);
     int ret = pl_cond_init(&p->wakeup);
     if (ret) {
+        PL_ERR(p, "Failed to init conditional variable: %d", ret);
         pl_mutex_destroy(&p->lock_weak);
         pl_mutex_destroy(&p->lock_strong);
         pl_free(p);
-        PL_ERR(p, "Failed to init conditional variable: %d", ret);
         return NULL;
     }
     return p;
@@ -334,15 +338,16 @@ static void queue_push(pl_queue p, const struct pl_source_frame *src)
     PL_TRACE(p, "Added new frame id %"PRIu64" with PTS %f",
              entry->signature, entry->pts);
 
+    const bool interlaced = src->first_field != PL_FIELD_NONE;
+    p->total_fields += interlaced ? 2 : 1;
+
     // Insert new entry into the correct spot in the queue, sorted by PTS
     for (int i = p->queue.num;; i--) {
         if (i == 0 || p->queue.elem[i - 1]->pts <= entry->pts) {
-            if (src->first_field == PL_FIELD_NONE) {
-                // Progressive
+            if (!interlaced) {
                 PL_ARRAY_INSERT_AT(p, p->queue, i, entry);
                 break;
             } else {
-                // Interlaced
                 struct entry *prev = i > 0 ? p->queue.elem[i - 1] : NULL;
                 struct entry *next = i < p->queue.num ? p->queue.elem[i] : NULL;
                 if (prev && prev->defer_second_field) {
@@ -658,7 +663,7 @@ done:
 
         // Last frame is held for an extra `p->fps.estimate` duration,
         // afterwards this function just returns EOF.
-        if (pts < p->queue.elem[0]->pts + p->fps.estimate) {
+        if (pts + PTS_EPS < p->queue.elem[0]->pts + p->fps.estimate) {
             ret = PL_QUEUE_OK;
         } else {
             entry_cull(p, p->queue.elem[0], true);
@@ -762,7 +767,7 @@ static enum pl_queue_status oversample(pl_queue p, struct pl_frame_mix *mix,
     }
 
     if (!mix)
-        return PL_QUEUE_OK;
+        return ret;
 
     // Can't oversample with only a single frame, fall back to point sampling
     if (p->queue.num < 2 || p->queue.elem[0]->pts > params->pts) {
@@ -874,7 +879,8 @@ static enum pl_queue_status interpolate(pl_queue p, struct pl_frame_mix *mix,
             // Don't forward EOF until we've held the last frame for the
             // desired ZOH hold duration
             double last_pts = p->queue.elem[p->queue.num - 1]->pts;
-            if (last_pts && params->pts >= last_pts + p->fps.estimate)
+            bool still_frame = p->total_fields <= 1;
+            if (params->pts + PTS_EPS >= last_pts + p->fps.estimate && !still_frame)
                 return ret;
             ret = PL_QUEUE_OK;
             goto done;
@@ -902,7 +908,7 @@ static enum pl_queue_status interpolate(pl_queue p, struct pl_frame_mix *mix,
 done: ;
 
     if (!mix)
-        return PL_QUEUE_OK;
+        return ret;
 
     // Construct a mix object representing the current queue state, starting at
     // the last frame before `min_pts` to make sure there's a fallback frame

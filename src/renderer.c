@@ -196,6 +196,9 @@ void pl_renderer_load(pl_renderer rr, const uint8_t *cache)
 
 void pl_renderer_flush_cache(pl_renderer rr)
 {
+    if (!rr)
+        return;
+
     for (int i = 0; i < rr->frames.num; i++)
         pl_tex_destroy(rr->gpu, &rr->frames.elem[i].tex);
     rr->frames.num = 0;
@@ -1946,12 +1949,14 @@ static bool pass_read_image(struct pass_state *pass)
          SH_FLOAT(neutral_luma), SH_FLOAT(neutral_chroma));
 
     // For quality reasons, explicitly drop subpixel offsets from the ref rect
-    // and re-add them as part of `pass->img.rect`, always rounding towards 0.
-    // Additionally, drop anamorphic subpixel mismatches.
+    // and re-add them as part of `pass->img.rect`, rounding to the nearest
+    // pixel. (Since the offset may be dropped entirely at 1:1 scale, rounding
+    // towards 0 would turn float error like 0.99999994 into a whole pixel
+    // shift.) Additionally, drop anamorphic subpixel mismatches.
     const pl_rect2df ref_rc = ref->img.rect;
     pl_rect2d ref_rounded;
-    ref_rounded.x0 = truncf(ref_rc.x0);
-    ref_rounded.y0 = truncf(ref_rc.y0);
+    ref_rounded.x0 = roundf(ref_rc.x0);
+    ref_rounded.y0 = roundf(ref_rc.y0);
     ref_rounded.x1 = ref_rounded.x0 + roundf(pl_rect_w(ref_rc));
     ref_rounded.y1 = ref_rounded.y0 + roundf(pl_rect_h(ref_rc));
 
@@ -3706,11 +3711,33 @@ done:
     return true;
 }
 
+static const struct pl_render_params *
+fix_params(struct pl_render_params *out, const struct pl_render_params *params)
+{
+    *out = *PL_DEF(params, &pl_render_default_params);
+
+    const struct pl_deband_params    *deband  = out->deband_params;
+    const struct pl_color_adjustment *adjust  = out->color_adjustment;
+    const struct pl_cone_params      *cones   = out->cone_params;
+    const struct pl_distort_params   *distort = out->distort_params;
+    if (deband && !deband->iterations && !deband->grain)
+        out->deband_params = NULL;
+    if (adjust && !memcmp(adjust, &pl_color_adjustment_neutral, sizeof(*adjust)))
+        out->color_adjustment = NULL;
+    if (cones && (!cones->cones || cones->strength == 1.0f))
+        out->cone_params = NULL;
+    if (distort && !memcmp(distort, &pl_distort_default_params, sizeof(*distort)))
+        out->distort_params = NULL;
+
+    return out;
+}
+
 bool pl_render_image(pl_renderer rr, const struct pl_frame *pimage,
                      const struct pl_frame *ptarget,
                      const struct pl_render_params *params)
 {
-    params = PL_DEF(params, &pl_render_default_params);
+    struct pl_render_params fixed;
+    params = fix_params(&fixed, params);
     pl_dispatch_mark_dynamic(rr->dp, params->dynamic_constants);
     if (!pimage)
         return draw_empty_overlays(rr, ptarget, params);
@@ -3892,7 +3919,8 @@ bool pl_render_image_mix(pl_renderer rr, const struct pl_frame_mix *images,
     if (!images->num_frames)
         return pl_render_image(rr, NULL, ptarget, params);
 
-    params = PL_DEF(params, &pl_render_default_params);
+    struct pl_render_params fixed;
+    params = fix_params(&fixed, params);
     struct params_info par_info = render_params_info(params);
     pl_dispatch_mark_dynamic(rr->dp, params->dynamic_constants);
 
@@ -4372,6 +4400,13 @@ void pl_frame_from_swapchain(struct pl_frame *out_frame,
     };
 }
 
+void pl_frame_size(const struct pl_frame *frame, int *w, int *h)
+{
+    pl_tex ref = frame->planes[frame_ref(frame)].texture;
+    *w = ref->params.w;
+    *h = ref->params.h;
+}
+
 bool pl_frame_is_cropped(const struct pl_frame *frame)
 {
     int x0 = roundf(PL_MIN(frame->crop.x0, frame->crop.x1)),
@@ -4379,15 +4414,15 @@ bool pl_frame_is_cropped(const struct pl_frame *frame)
         x1 = roundf(PL_MAX(frame->crop.x0, frame->crop.x1)),
         y1 = roundf(PL_MAX(frame->crop.y0, frame->crop.y1));
 
-    pl_tex ref = frame->planes[frame_ref(frame)].texture;
-    pl_assert(ref);
+    int ref_w, ref_h;
+    pl_frame_size(frame, &ref_w, &ref_h);
 
     if (!x0 && !x1)
-        x1 = ref->params.w;
+        x1 = ref_w;
     if (!y0 && !y1)
-        y1 = ref->params.h;
+        y1 = ref_h;
 
-    return x0 > 0 || y0 > 0 || x1 < ref->params.w || y1 < ref->params.h;
+    return x0 > 0 || y0 > 0 || x1 < ref_w || y1 < ref_h;
 }
 
 // Encodes an sRGB color into the frame's native color representation
@@ -4496,6 +4531,9 @@ struct pl_render_errors pl_renderer_get_errors(pl_renderer rr)
 void pl_renderer_reset_errors(pl_renderer rr,
                               const struct pl_render_errors *errors)
 {
+    if (!rr)
+        return;
+
     if (!errors) {
         // Reset everything
         rr->errors = PL_RENDER_ERR_NONE;
