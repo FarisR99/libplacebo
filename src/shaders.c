@@ -371,7 +371,7 @@ ident_t sh_desc(pl_shader sh, struct pl_shader_desc sd)
         for (int i = 0; i < sd.num_buffer_vars; i++) {
             struct pl_var *bv = &sd.buffer_vars[i].var;
             const char *name = bv->name;
-            GLSLP("#define %s "$"\n", name, sh_fresh_name(sh, &bv->name));
+            GLSLG("#define %s "$"\n", name, sh_fresh_name(sh, &bv->name));
         }
         break;
 
@@ -427,9 +427,18 @@ ident_t sh_const(pl_shader sh, struct pl_shader_const sc)
     case PL_VAR_UINT:
         GLSLH("const uint "$" = uint(%u); \n", id, *(unsigned int *) sc.data);
         return id;
-    case PL_VAR_FLOAT:
-        GLSLH("const float "$" = float(%f); \n", id, *(float *) sc.data);
+    case PL_VAR_FLOAT: {
+        // The shortest form of an integral value has no decimal point, which
+        // makes it an int literal, and the lexer limits those to 32 bits
+        char buf[32];
+        int len = pl_str_print_double(buf, sizeof(buf) - 2, *(float *) sc.data);
+        if (!memchr(buf, '.', len) && !memchr(buf, 'e', len)) {
+            buf[len++] = '.';
+            buf[len++] = '0';
+        }
+        GLSLH("const float "$" = float(%.*s); \n", id, len, buf);
         return id;
+    }
     case PL_VAR_INVALID:
     case PL_VAR_TYPE_COUNT:
         break;
@@ -688,8 +697,9 @@ ident_t sh_subpass(pl_shader sh, pl_shader sub)
     sh->output_w = res_w;
     sh->output_h = res_h;
 
-    // Append the prelude and header
+    // Append the prelude, globals and header
     pl_str_builder_concat(sh->buffers[SH_BUF_PRELUDE], sub->buffers[SH_BUF_PRELUDE]);
+    pl_str_builder_concat(sh->buffers[SH_BUF_GLOBAL], sub->buffers[SH_BUF_GLOBAL]);
     pl_str_builder_concat(sh->buffers[SH_BUF_HEADER], sub->buffers[SH_BUF_HEADER]);
 
     // Append the body as a new header function
@@ -747,24 +757,24 @@ pl_str_builder sh_finalize_internal(pl_shader sh)
         return NULL;
 
     // Padding for readability
-    GLSLP("\n");
+    GLSLG("\n");
 
-    // Concatenate everything onto the prelude to form the final output
-    pl_str_builder_concat(sh->buffers[SH_BUF_PRELUDE], sh->buffers[SH_BUF_HEADER]);
+    // Concatenate everything onto the globals to form the final output
+    pl_str_builder_concat(sh->buffers[SH_BUF_GLOBAL], sh->buffers[SH_BUF_HEADER]);
 
     if (sh->input == PL_SHADER_SIG_SAMPLER) {
         pl_assert(sh->sampler_prefix);
-        GLSLP("%s "$"(%c%s src_tex, vec2 tex_coord) {\n",
+        GLSLG("%s "$"(%c%s src_tex, vec2 tex_coord) {\n",
               outsigs[sh->output], sh->name,
               sh->sampler_prefix,
               samplers2D[sh->sampler_type]);
     } else {
-        GLSLP("%s "$"(%s) {\n", outsigs[sh->output], sh->name, insigs[sh->input]);
+        GLSLG("%s "$"(%s) {\n", outsigs[sh->output], sh->name, insigs[sh->input]);
     }
 
-    pl_str_builder_concat(sh->buffers[SH_BUF_PRELUDE], sh->buffers[SH_BUF_BODY]);
-    pl_str_builder_concat(sh->buffers[SH_BUF_PRELUDE], sh->buffers[SH_BUF_FOOTER]);
-    GLSLP("%s\n}\n\n", retvals[sh->output]);
+    pl_str_builder_concat(sh->buffers[SH_BUF_GLOBAL], sh->buffers[SH_BUF_BODY]);
+    pl_str_builder_concat(sh->buffers[SH_BUF_GLOBAL], sh->buffers[SH_BUF_FOOTER]);
+    GLSLG("%s\n}\n\n", retvals[sh->output]);
 
     // Generate the shader info
     struct sh_info *info = sh->info;
@@ -804,7 +814,7 @@ next_step: ;
         info->info.description = (char *) info->desc.buf;
 
     sh->mutable = false;
-    return sh->buffers[SH_BUF_PRELUDE];
+    return sh->buffers[SH_BUF_GLOBAL];
 }
 
 const struct pl_shader_res *pl_shader_finalize(pl_shader sh)
@@ -816,7 +826,11 @@ const struct pl_shader_res *pl_shader_finalize(pl_shader sh)
     }
 
     pl_shader_info info = &sh->info->info;
-    pl_str_builder glsl = sh_finalize_internal(sh);
+    pl_str_builder body = sh_finalize_internal(sh);
+
+    // The prelude goes in front of everything else
+    pl_str_builder glsl = sh->buffers[SH_BUF_PRELUDE];
+    pl_str_builder_concat(glsl, body);
 
     // Turn ident_t into friendly strings before passing it to users
 #define FIX_IDENT(name) \
@@ -980,8 +994,10 @@ ident_t sh_prng(pl_shader sh, bool temporal, ident_t *p_state)
     ident_t randfun = sh_fresh(sh, "rand"),
             state = sh_fresh(sh, "state");
 
-    // Based on pcg3d (http://jcgt.org/published/0009/03/02/)
-    GLSLP("#define prng_t uvec3\n");
+    // Based on pcg3d (http://jcgt.org/published/0009/03/02/). The result is
+    // made from the 24 high bits, which a float holds exactly, so that it
+    // stays below 1.0 (the full 32 bits would round up to 1.0 at the top)
+    GLSLG("#define prng_t uvec3\n");
     GLSLH("vec3 "$"(inout uvec3 s) {                    \n"
           "    s = 1664525u * s + uvec3(1013904223u);   \n"
           "    s.x += s.y * s.z;                        \n"
@@ -991,7 +1007,7 @@ ident_t sh_prng(pl_shader sh, bool temporal, ident_t *p_state)
           "    s.x += s.y * s.z;                        \n"
           "    s.y += s.z * s.x;                        \n"
           "    s.z += s.x * s.y;                        \n"
-          "    return vec3(s) * 1.0/float(0xFFFFFFFFu); \n"
+          "    return vec3(s >> 8u) * (1.0/16777216.0); \n"
           "}                                            \n",
           randfun);
 

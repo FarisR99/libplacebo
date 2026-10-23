@@ -95,7 +95,7 @@ static void set_canvas_params(struct pl_render_params *par,
                               const struct pl_render_params *canvas,
                               bool base, bool direct)
 {
-    par->background = base && direct ? get_background(canvas) : PL_CLEAR_SKIP;
+    par->background = base ? get_background(canvas) : PL_CLEAR_SKIP;
     par->border     = base ? get_border(canvas) : PL_CLEAR_SKIP;
     memcpy(par->background_color, canvas->background_color,
            sizeof(par->background_color));
@@ -138,6 +138,7 @@ static void get_canvas_params(struct pl_render_params *par, pl_compositor comp)
     par->num_hooks          = 0;
     par->lut                = NULL;
     par->corner_rounding    = 0.0f;
+    par->transparency       = 0.0f;
 }
 
 static void info_callback(void *priv, const struct pl_render_info *info)
@@ -374,12 +375,14 @@ enum pl_queue_status pl_input_update(pl_input input,
             pl_color_space_merge(&color, &frame->color);
             frame->repr  = repr;
             frame->color = color;
+            if (input->chroma_location)
+                pl_frame_set_chroma_location(frame, input->chroma_location);
             // frame->rotation and frame->crop are updated by render_input()
         }
     }
 
     if (pi->status == PL_QUEUE_EOF || pi->status == PL_QUEUE_ERR) {
-        pl_renderer_flush_cache(input->renderer);
+        pl_renderer_reset(input->renderer);
         pl_queue_reset(input->queue);
         pl_queue_push(input->queue, NULL); // discard any further frames
         pi->stop_pts = pts;
@@ -751,6 +754,7 @@ static bool is_opaque(pl_input input, const struct pl_frame *image)
     const struct pl_distort_params *distort = par->distort_params;
 
     return image->repr.alpha == PL_ALPHA_NONE && !par->corner_rounding &&
+           par->transparency <= 0.0f &&
            (!distort || !memcmp(distort, &pl_distort_default_params, sizeof(*distort)));
 }
 
@@ -806,6 +810,12 @@ static void update_inputs(pl_compositor comp, struct pl_compositor_status *statu
         if (!on_canvas(input, cur, target))
             continue;
 
+        // Fully transparent inputs still need to be rendered if they are
+        // the base layer, since they imply the shape of the bg/border
+        const struct pl_render_params *par = input_params(input);
+        if (p->visible.num && par->transparency >= 1.0f)
+            continue;
+
         // If an opaque frame covers the entire output, disregard lower layers
         if (covers_canvas(input, cur, target) && is_opaque(input, cur)) {
             // Earlier inputs will not be rendered
@@ -842,8 +852,16 @@ bool pl_compositor_render(pl_compositor comp, const struct pl_frame *ptarget,
         return false;
     }
 
+    struct pl_frame target = *ptarget;
+    target.repr  = comp->repr;
+    target.color = comp->color;
+    pl_color_repr_merge(&target.repr, &ptarget->repr);
+    pl_color_space_merge(&target.color, &ptarget->color);
+    if (comp->chroma_location)
+        pl_frame_set_chroma_location(&target, comp->chroma_location);
+
     struct pl_compositor_status status;
-    update_inputs(comp, &status, ptarget, params);
+    update_inputs(comp, &status, &target, params);
     if (out_status)
         *out_status = status;
     if (status.status == PL_QUEUE_ERR)
@@ -853,17 +871,20 @@ bool pl_compositor_render(pl_compositor comp, const struct pl_frame *ptarget,
     get_canvas_params(&cpar, comp);
     if (!status.num_visible) {
         set_info_callback(&cpar, comp, NULL);
-        return pl_render_image(p->rr, NULL, ptarget, &cpar);
+        return pl_render_image(p->rr, NULL, &target, &cpar);
     }
 
     // Compute normalized rotated output dimensions
-    struct pl_frame target = *ptarget;
     int target_width, target_height;
     pl_frame_size(&target, &target_width, &target_height);
 
+    // The linear light intermediate can only be skipped for opaque single inputs
+    const bool trivial = status.num_visible == 1 &&
+                         is_opaque(status.visible[0], status.base);
+
     const struct pl_render_params *canvas = canvas_params(comp);
     const bool skip_border = get_border(canvas) == PL_CLEAR_SKIP;
-    bool use_inter = status.num_visible > 1 && !canvas->disable_fbos &&
+    bool use_inter = !trivial && !canvas->disable_fbos &&
                      !comp->disable_linear_composition &&
                      alloc_inter_fbo(p, target_width, target_height);
 
@@ -912,10 +933,11 @@ bool pl_compositor_render(pl_compositor comp, const struct pl_frame *ptarget,
         target.crop = orig_target.crop = (pl_rect2df) {0};
         target.repr.alpha = PL_ALPHA_PREMULTIPLIED;
 
+        // The base layer already drew the background, in linear light
+        cpar.background = PL_CLEAR_SKIP;
+        cpar.blend_against_tiles = false;
         if (skip_border && !cpar.blend_params) {
             // Blend the canvas onto the target to preserve the border
-            cpar.background = PL_CLEAR_SKIP;
-            cpar.blend_against_tiles = false;
             cpar.blend_params = &pl_alpha_overlay;
             orig_target.repr.alpha = PL_ALPHA_INDEPENDENT;
         }

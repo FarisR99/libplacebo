@@ -71,6 +71,10 @@ typedef struct pl_input_t {
     struct pl_color_repr repr;
     struct pl_color_space color;
 
+    // Chroma location override. If set, replaces the chroma location of the
+    // input's frames (i.e. the `shift_x/y` of their subsampled planes).
+    enum pl_chroma_location chroma_location;
+
     // Compositing order. Inputs with a higher `z_index` are drawn on top of,
     // and may obscure, inputs with a lower one. Ties are broken by the order
     // in which the inputs were attached, with later inputs drawn on top.
@@ -152,12 +156,19 @@ typedef struct pl_compositor_t {
     // Optional; defaults to `&pl_render_default_params` if unset.
     const struct pl_render_params *params;
 
+    // Color space / representation overrides for the output. Any values set
+    // here override the values of the target frame passed to
+    // `pl_compositor_render()`.
+    struct pl_color_repr repr;
+    struct pl_color_space color;
+
+    // Chroma location override for the output, see `pl_input.chroma_location`.
+    enum pl_chroma_location chroma_location;
+
     // Disables linear light composition, rendering all inputs directly onto
     // the target frame instead. Intended for debugging purposes only.
     //
-    // Note: Linear light composition is only used when there is more than one
-    // visible input. A lone input is always rendered directly onto the target
-    // frame, exactly as `pl_render_image_mix()` would.
+    // Note: Linear light composition is only used when necessary.
     bool disable_linear_composition;
 
     // Optional callback invoked for every shader pass. `input` is set to the
@@ -322,6 +333,39 @@ PL_API const struct pl_frame *pl_compositor_current_frame(pl_compositor comp,
 PL_API struct pl_render_errors pl_compositor_get_errors(pl_compositor comp);
 PL_API void pl_compositor_reset_errors(pl_compositor comp,
                                        const struct pl_render_errors *errors);
+
+// A scene is a high-level wrapper around pl_compositor, that can be
+// automatically initialized from a JSON description.
+typedef const struct pl_scene_t {
+    // Note: The scene owns `pl_compositor.params`, as well as the `params` of
+    // every input. Inputs may not be added to or removed from the compositor.
+    pl_compositor comp;
+} *pl_scene;
+
+// Parse a scene graph from a provided JSON object. Returns NULL on errors.
+//
+// This does not require a GPU. The resulting compositor is uninitialized, and
+// must be initialized with `pl_compositor_init` before rendering.
+//
+// See `docs/json.md` for more information.
+PL_API pl_scene pl_scene_create_json(pl_log log, const char *json, size_t len);
+
+// Destroys a scene, including its compositor and all of its inputs.
+PL_API void pl_scene_destroy(pl_scene *scene);
+
+// Update the compositor and input parameters of `scene` to reflect the
+// current instance in time (output-referred). Has no effect on scenes without
+// animations.
+PL_API void pl_scene_update(pl_scene scene, double pts);
+
+// Helper function to both update a scene and render it.
+static inline bool pl_scene_render(pl_scene scene, const struct pl_frame *target,
+                                   const struct pl_queue_params *params,
+                                   struct pl_compositor_status *out_status)
+{
+    pl_scene_update(scene, params->pts);
+    return pl_compositor_render(scene->comp, target, params, out_status);
+}
 
 PL_API_END
 

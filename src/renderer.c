@@ -18,6 +18,7 @@
 #include <math.h>
 
 #include "common.h"
+#include "colorspace.h"
 #include "filters.h"
 #include "hash.h"
 #include "shaders.h"
@@ -140,21 +141,19 @@ static void sampler_destroy(pl_renderer rr, struct sampler *sampler)
     pl_shader_obj_destroy(&sampler->downscaler_state);
 }
 
-void pl_renderer_destroy(pl_renderer *p_rr)
+static void renderer_uninit(pl_renderer rr)
 {
-    pl_renderer rr = *p_rr;
-    if (!rr)
-        return;
-
     // Free all intermediate FBOs
     for (int n = 0; n < PL_ARRAY_SIZE(rr->fbos); n++) {
         for (int i = 0; i < rr->fbos[n].num; i++)
             pl_tex_destroy(rr->gpu, &rr->fbos[n].elem[i]);
+        rr->fbos[n].num = 0;
     }
     for (int i = 0; i < rr->frames.num; i++)
         pl_tex_destroy(rr->gpu, &rr->frames.elem[i].tex);
     for (int i = 0; i < rr->frame_fbos.num; i++)
         pl_tex_destroy(rr->gpu, &rr->frame_fbos.elem[i]);
+    rr->frames.num = rr->frame_fbos.num = 0;
 
     // Free all shader resource objects
     pl_shader_obj_destroy(&rr->tone_map_state);
@@ -177,11 +176,34 @@ void pl_renderer_destroy(pl_renderer *p_rr)
         sampler_destroy(rr, &rr->samplers_el[i]);
 
     // Free fallback ICC profiles
-    for (int i = 0; i < PL_ARRAY_SIZE(rr->icc_fallback); i++)
+    for (int i = 0; i < PL_ARRAY_SIZE(rr->icc_fallback); i++) {
         pl_icc_close(&rr->icc_fallback[i].icc);
+        rr->icc_fallback[i].error = 0;
+    }
 
     pl_dispatch_destroy(&rr->dp);
+}
+
+void pl_renderer_destroy(pl_renderer *p_rr)
+{
+    pl_renderer rr = *p_rr;
+    if (!rr)
+        return;
+
+    renderer_uninit(rr);
     pl_free_ptr(p_rr);
+}
+
+void pl_renderer_reset(pl_renderer rr)
+{
+    if (!rr)
+        return;
+
+    renderer_uninit(rr);
+    rr->dp = pl_dispatch_create(rr->log, rr->gpu);
+    pl_assert(rr->dp);
+
+    pl_renderer_reset_errors(rr, NULL);
 }
 
 size_t pl_renderer_save(pl_renderer rr, uint8_t *out)
@@ -1637,8 +1659,9 @@ static pl_shader sample_el(struct pass_state *pass, const struct pl_frame *el)
     float rlx = lrx >= 1 ? roundf(lrx) : 1.0 / roundf(1.0 / lrx),
           rly = lry >= 1 ? roundf(lry) : 1.0 / roundf(1.0 / lry);
 
+    // The NLQ reads the EL planes as the integer codes they hold
     struct pl_color_repr el_repr = el->repr;
-    float el_scale = pl_color_repr_normalize(&el_repr);
+    float el_scale = pl_color_repr_code_scale(&el_repr, NULL);
 
 #pragma GLSL vec4 color = vec4(0.0), tmp;
 
@@ -1865,7 +1888,10 @@ static bool pass_read_image(struct pass_state *pass)
         }
     }
 
-    int bits = image->repr.bits.sample_depth;
+    // The neutral values are in the units of the normalized signal
+    struct pl_color_repr normalized = image->repr;
+    pl_color_repr_normalize(&normalized);
+    int bits = normalized.bits.sample_depth;
     float out_scale = bits ? (1llu << bits) / ((1llu << bits) - 1.0f) : 1.0f;
     float neutral_luma = 0.0, neutral_chroma = 0.5f * out_scale;
     if (pl_color_levels_guess(&image->repr) == PL_COLOR_LEVELS_LIMITED)
@@ -2472,7 +2498,8 @@ static void pass_convert_colors(struct pass_state *pass)
 
 // Returns true if error diffusion was successfully performed
 static bool pass_error_diffusion(struct pass_state *pass, pl_shader *sh,
-                                 int new_depth, int comps, int out_w, int out_h)
+                                 int new_depth, float steps, int comps,
+                                 int out_w, int out_h)
 {
     const struct pl_render_params *params = pass->params;
     pl_renderer rr = pass->rr;
@@ -2505,7 +2532,7 @@ static bool pass_error_diffusion(struct pass_state *pass, pl_shader *sh,
         goto error;
 
     pl_shader dsh = pl_dispatch_begin(rr->dp);
-    if (!pl_shader_error_diffusion(dsh, &edpars)) {
+    if (!sh_error_diffusion(dsh, &edpars, steps)) {
         pl_dispatch_abort(rr->dp, &dsh);
         goto error;
     }
@@ -2757,19 +2784,21 @@ static void translate_srgb_color(float out_color[3], const float in_color[3],
     case PL_COLOR_TRC_GAMMA22:
         // Re-use input transfer curve to avoid small adaptations
         srgb.transfer = csp->transfer;
-        srgb.hdr.min_luma = csp->hdr.min_luma;
         break;
     default:
-        // In all other cases, use infinite contrast sRGB, to avoid unwanted
-        // black level changes
-        srgb.hdr.min_luma = PL_COLOR_HDR_BLACK;
         break;
     }
 
-    // The colors are display-referred, so on SDR targets map sRGB white onto
-    // the target white, regardless of the target's absolute luminance
-    if (!pl_color_transfer_is_hdr(csp->transfer))
+    // The colors are display-referred, so on SDR targets map sRGB extremes
+    // onto the target extremes, regardless of the target's absolute luminance
+    if (!pl_color_transfer_is_hdr(csp->transfer)) {
+        srgb.hdr.min_luma = csp->hdr.min_luma;
         srgb.hdr.max_luma = csp->hdr.max_luma;
+    } else {
+        // On HDR targets, use infinite contrast sRGB instead, to avoid
+        // unwanted black level changes
+        srgb.hdr.min_luma = PL_COLOR_HDR_BLACK;
+    }
 
     memcpy(out_color, in_color, sizeof(float[3]));
     pl_color_linearize(&srgb, out_color);
@@ -2808,39 +2837,45 @@ static bool pass_output_target(struct pass_state *pass)
         }
     }
 
-    if (params->corner_rounding > 0.0f) {
-        const float out_w2 = fabsf(pl_rect_w(target->crop)) / 2.0f;
-        const float out_h2 = fabsf(pl_rect_h(target->crop)) / 2.0f;
-        const float radius = fminf(params->corner_rounding, 1.0f) *
-                             fminf(out_w2, out_h2);
-        const struct pl_rect2df relpos = {
-            .x0 = -out_w2, .y0 = -out_h2,
-            .x1 =  out_w2, .y1 =  out_h2,
-        };
-
+    // Both of these act as an alpha mask applied on top of the image
+    const float opacity = 1.0f - PL_CLAMP(params->transparency, 0.0f, 1.0f);
+    if (params->corner_rounding > 0.0f || opacity < 1.0f) {
         pl_shader sh = img_sh(pass, img);
-        GLSL("float radius = "$";                           \n"
-             "vec2 size2 = vec2("$", "$");                  \n"
-             "vec2 relpos = "$";                            \n"
-             "vec2 rd = abs(relpos) - size2 + vec2(radius); \n"
-             "float rdist = length(max(rd, 0.0)) - radius;  \n"
-             "float border = smoothstep(2.0f, 0.0f, rdist); \n",
-             SH_FLOAT_DYN(radius),
-             SH_FLOAT_DYN(out_w2), SH_FLOAT_DYN(out_h2),
-             sh_attr_vec2(sh, "relpos", &relpos));
+        GLSL("float mask = "$"; \n", SH_FLOAT_DYN(opacity));
+
+        if (params->corner_rounding > 0.0f) {
+            const float out_w2 = fabsf(pl_rect_w(target->crop)) / 2.0f;
+            const float out_h2 = fabsf(pl_rect_h(target->crop)) / 2.0f;
+            const float radius = fminf(params->corner_rounding, 1.0f) *
+                                 fminf(out_w2, out_h2);
+            const struct pl_rect2df relpos = {
+                .x0 = -out_w2, .y0 = -out_h2,
+                .x1 =  out_w2, .y1 =  out_h2,
+            };
+
+            GLSL("float radius = "$";                           \n"
+                 "vec2 size2 = vec2("$", "$");                  \n"
+                 "vec2 relpos = "$";                            \n"
+                 "vec2 rd = abs(relpos) - size2 + vec2(radius); \n"
+                 "float rdist = length(max(rd, 0.0)) - radius;  \n"
+                 "mask *= smoothstep(2.0f, 0.0f, rdist);        \n",
+                 SH_FLOAT_DYN(radius),
+                 SH_FLOAT_DYN(out_w2), SH_FLOAT_DYN(out_h2),
+                 sh_attr_vec2(sh, "relpos", &relpos));
+        }
 
         switch (img->repr.alpha) {
         case PL_ALPHA_UNKNOWN:
         case PL_ALPHA_NONE:
-            GLSL("color.a = border; \n");
+            GLSL("color.a = mask; \n");
             img->repr.alpha = PL_ALPHA_INDEPENDENT;
             img->comps = 4;
             break;
         case PL_ALPHA_INDEPENDENT:
-            GLSL("color.a *= border; \n");
+            GLSL("color.a *= mask; \n");
             break;
         case PL_ALPHA_PREMULTIPLIED:
-            GLSL("color *= border; \n");
+            GLSL("color *= mask; \n");
             break;
         case PL_ALPHA_MODE_COUNT:
             pl_unreachable();
@@ -3101,11 +3136,28 @@ static bool pass_output_target(struct pass_state *pass)
 
         }
 
+        // The sample grid of the texture, as seen by the shader. Note that
+        // SNORM normalizes to [-1, 1], so we subtract one bit
+        enum pl_fmt_type type = plane->texture->params.format->type;
+        const int sample_depth = PL_DEF(target->repr.bits.sample_depth,
+                                        target->repr.bits.color_depth);
+        const bool snap = sample_depth && type != PL_FMT_FLOAT;
+        float grid = 0.0f;
+        if (snap) {
+            const bool snorm = type == PL_FMT_SNORM;
+            const int bit_shift = target->repr.bits.bit_shift;
+            grid = ((1ull << (sample_depth - snorm)) - 1) /
+                    (float) (1ull << bit_shift);
+        }
+
         // Ignore dithering for > 16-bit outputs by default, since it makes
         // little sense to do so (and probably just adds errors)
         int depth = target->repr.bits.color_depth, applied_dither = 0;
         if (depth && (depth < 16 || params->force_dither)) {
-            if (pass_error_diffusion(pass, &sh, depth, plane->components,
+            // Dither onto the sample grid, which is not 2^depth - 1 steps for
+            // limited range codes in a deeper texture (shifted, not scaled)
+            const float steps = snap ? grid / scale : ldexpf(1.0f, depth) - 1.0f;
+            if (pass_error_diffusion(pass, &sh, depth, steps, plane->components,
                                      rx1 - rx0, ry1 - ry0))
             {
                 applied_dither = depth;
@@ -3113,7 +3165,7 @@ static bool pass_output_target(struct pass_state *pass)
                 struct pl_dither_params dparams = *params->dither_params;
                 if (!params->disable_dither_gamma_correction)
                     dparams.transfer = target->color.transfer;
-                pl_shader_dither(sh, depth, &rr->dither_state, &dparams);
+                sh_dither(sh, depth, steps, &rr->dither_state, &dparams);
                 applied_dither = depth;
             }
         }
@@ -3127,20 +3179,10 @@ static bool pass_output_target(struct pass_state *pass)
             rr->prev_dither = applied_dither;
         }
 
-        enum pl_fmt_type type = plane->texture->params.format->type;
-        const int sample_depth = PL_DEF(target->repr.bits.sample_depth,
-                                        target->repr.bits.color_depth);
-
-        if (sample_depth && type != PL_FMT_FLOAT) {
+        if (snap) {
+            // Snap MSB-aligned formats (e.g. P010) to the sample grid, so the
+            // unused low bits are zero instead of carrying sub-LSB error
             const char *comps = params->blend_params ? "rgb" : "rgba";
-            const int bit_shift = target->repr.bits.bit_shift;
-
-            // Snap MSB-aligned formats (e.g. P010) to the sample grid, so the unused
-            // low bits are zero instead of carrying sub-LSB error. Note that
-            // SNORM normalizes to [-1, 1], so we subtract one bit
-            const bool snorm = plane->texture->params.format->type == PL_FMT_SNORM;
-            const float grid = ((1ull << (sample_depth - snorm)) - 1) /
-                                (float) (1ull << bit_shift);
             GLSL("color.%s = round(color.%s * "$") * "$"; \n",
                  comps, comps, SH_FLOAT(grid / scale), SH_FLOAT(1.0f / grid));
         }
@@ -3900,6 +3942,7 @@ static struct params_info render_params_info(const struct pl_render_params *para
     CLEAR(params.error_diffusion);
     CLEAR(params.force_dither);
     CLEAR(params.corner_rounding);
+    CLEAR(params.transparency);
 
     // Clear out other irrelevant fields
     CLEAR(params.dynamic_constants);

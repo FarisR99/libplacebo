@@ -275,6 +275,12 @@ struct pl_render_params {
     // of 1.0 rounds the corners as much as possible.
     float corner_rounding;
 
+    // Transparency of the image itself, multiplied on top of any alpha
+    // channel it already has. 0.0 for opaque (the default), 1.0 for fully
+    // transparent. Like `corner_rounding`, this only affects the image, not
+    // the `border` around it.
+    float transparency;
+
     // --- Performance / quality trade-off options:
     // These should generally be left off where quality is desired, as they can
     // degrade the result quite noticeably; but may be useful for older or
@@ -758,6 +764,12 @@ PL_API bool pl_render_image(pl_renderer rr, const struct pl_frame *image,
 // so calling it is a good idea if the content source is expected to change
 // dramatically (e.g. when switching to a different file).
 PL_API void pl_renderer_flush_cache(pl_renderer rr);
+
+// Releases *all* GPU resources held by this renderer, including intermediate
+// textures not affected by `pl_renderer_flush_cache()`.
+//
+// Resources will be recreated as needed on subsequent use.
+PL_API void pl_renderer_reset(pl_renderer rr);
 
 // Mirrors `pl_get_detected_hdr_metadata`, giving you the current internal peak
 // detection HDR metadata (when peak detection is active). Returns false if no
