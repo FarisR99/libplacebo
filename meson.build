@@ -12,7 +12,11 @@ project('libplacebo', ['c', 'cpp'],
     7,
     # API version
     {
-      '388': 'add pl_mpv_user_shader_params.half_precision',
+      '392': 'add pl_mpv_user_shader_params.half_precision',
+      '391': 'add pl_render_stage enum value PL_RENDER_STAGE_MOTION',
+      '390': 'add pl_frame_interp_input and pl_shader_frame_interp',
+      '389': 'add pl_frame_interp_params and pl_render_params.frame_interp_params',
+      '388': 'add <libplacebo/shaders/motion.h>, motion estimation API',
       '387': 'change the units of pl_dovi_metadata.comp.pivots and pl_dovi_metadata.nlq, add pl_dovi_nlq_data.hdr_in_max',
       '386': 'add pl_queue_set_status() and pl_queue_get_status()',
       '385': 'add pl_compositor.repr/color/chroma_location and pl_input.chroma_location',
