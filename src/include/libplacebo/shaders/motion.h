@@ -158,8 +158,8 @@ PL_API void pl_motion_reset(pl_shader_obj state);
 // motion is estimated at a block granularity.
 //
 // Each texel holds `vec3(mv.x, mv.y, confidence)` in its first three
-// components, in a floating point format. `mv.x` and `mv.y` are whole
-// numbers, and `confidence` is in the range [0, 1], with 1 meaning high
+// components, in a floating point format. `mv.x` and `mv.y` may be
+// fractional, and `confidence` is in the range [0, 1], with 1 meaning high
 // confidence. Any further components are unspecified. Sample the field with
 // `PL_TEX_SAMPLE_NEAREST` (or `texelFetch`).
 // NOTE: the confidence is currently always 1.
@@ -223,6 +223,11 @@ enum pl_frame_interp_algo {
     // A modified frame mixing algorithm that offsets a sample by global
     // motion.
     PL_FRAME_INTERP_GLOBAL_MOTION = 0,
+
+    // Debugging aid: instead of interpolating, draws the forward motion
+    // vectors between the two frames with the Middlebury color wheel, on top
+    // of the earlier frame and as opaque as the vectors are confident.
+    PL_FRAME_INTERP_VISUALIZE,
 
     PL_FRAME_INTERP_ALGO_COUNT,
 };

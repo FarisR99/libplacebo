@@ -109,7 +109,7 @@ ident_t sh_hlg_oetf(pl_shader sh, int comps)
 #pragma GLSLH                                                                   \
     ${vecType: mask} $fun(${vecType: mask} x)                                   \
     {                                                                           \
-        ${vecType: mask} lo = 0.5 * sqrt(x);                                    \
+        ${vecType: mask} lo = 0.5 * sqrt(max(x, 0.0));                          \
         ${vecType: mask} hi = ${const float: HLG_A}                             \
                               * log(x - ${const float: HLG_B})                  \
                               + ${const float: HLG_C};                          \
@@ -478,34 +478,34 @@ void pl_shader_decode_color_ex(pl_shader sh,
     switch (orig_sys) {
     case PL_COLOR_SYSTEM_BT_2020_C:
         // Conversion for C'rcY'cC'bc via the BT.2020 CL system:
-        // C'bc = (B'-Y'c) / 1.9404  | C'bc <= 0
-        //      = (B'-Y'c) / 1.5816  | C'bc >  0
+        // C'bc = (B'-Y'c) / (2 Nb)  | C'bc <= 0
+        //      = (B'-Y'c) / (2 Pb)  | C'bc >  0
         //
-        // C'rc = (R'-Y'c) / 1.7184  | C'rc <= 0
-        //      = (R'-Y'c) / 0.9936  | C'rc >  0
+        // C'rc = (R'-Y'c) / (2 Nr)  | C'rc <= 0
+        //      = (R'-Y'c) / (2 Pr)  | C'rc >  0
         //
-        // as per the BT.2020 specification, table 4. This is a non-linear
-        // transformation because (constant) luminance receives non-equal
-        // contributions from the three different channels.
-        GLSL("// constant luminance conversion                              \n"
-             "color.br = color.br * mix(vec2(1.5816, 0.9936),               \n"
-             "                          vec2(1.9404, 1.7184),               \n"
-             "                          lessThanEqual(color.br, vec2(0.0))) \n"
-             "           + color.gg;                                        \n");
-        // Expand channels to camera-linear light. This shader currently just
-        // assumes everything uses the BT.2020 12-bit gamma function, since the
-        // difference between 10 and 12-bit is negligible for anything other
-        // than 12-bit content.
-        GLSL("vec3 lin = mix(color.rgb * vec3(1.0/4.5),                        \n"
-             "                pow((color.rgb + vec3(0.0993))*vec3(1.0/1.0993), \n"
-             "                    vec3(1.0/0.45)),                             \n"
-             "                lessThanEqual(vec3(0.08145), color.rgb));        \n");
+        // with Nb = OETF(1 - Kb), Pb = 1 - OETF(Kb), Nr = OETF(1 - Kr) and
+        // Pr = 1 - OETF(Kr), as per the BT.2020-2 specification, table 4.
+        // This is a non-linear transformation because (constant) luminance
+        // receives non-equal contributions from the three different channels.
+        GLSL("// constant luminance conversion                                         \n"
+             "color.br = color.br * mix(vec2(1.5819708492989484, 0.99382959526841756), \n"
+             "                          vec2(1.9403433056341009, 1.7182419845671139),  \n"
+             "                          lessThanEqual(color.br, vec2(0.0)))            \n"
+             "           + color.gg;                                                   \n");
+        // Expand channels to camera-linear light, through the BT.2020 gamma
+        // function with the exact alpha and beta of BT.2020-2, which its 10
+        // and 12-bit values approximate
+        GLSL("vec3 lin = mix(color.rgb * vec3(1.0/4.5),                                                 \n"
+             "                pow((color.rgb + vec3(0.09929682680944294))*vec3(1.0/1.0992968268094429), \n"
+             "                    vec3(1.0/0.45)),                                                      \n"
+             "                lessThanEqual(vec3(0.081242858298635133), color.rgb));                    \n");
         // Calculate the green channel from the expanded RYcB, and recompress to G'
         // The BT.2020 specification says Yc = 0.2627*R + 0.6780*G + 0.0593*B
-        GLSL("color.g = (lin.g - 0.2627*lin.r - 0.0593*lin.b)*1.0/0.6780;   \n"
-             "color.g = mix(color.g * 4.5,                                  \n"
-             "              1.0993 * pow(color.g, 0.45) - 0.0993,           \n"
-             "              0.0181 <= color.g);                             \n");
+        GLSL("color.g = (lin.g - 0.2627*lin.r - 0.0593*lin.b)*1.0/0.6780;                  \n"
+             "color.g = mix(color.g * 4.5,                                                 \n"
+             "              1.0992968268094429 * pow(color.g, 0.45) - 0.09929682680944294, \n"
+             "              0.018053968510807807 <= color.g);                              \n");
         break;
 
     case PL_COLOR_SYSTEM_BT_2100_PQ: {
@@ -525,9 +525,9 @@ void pl_shader_decode_color_ex(pl_shader sh,
 #pragma GLSL                                                                    \
         color.rgb = $pq_eotf(color.rgb);                                        \
         /* LMS matrix */                                                        \
-        color.rgb = mat3( 3.43661, -0.79133, -0.0259499,                        \
-                         -2.50645,  1.98360, -0.0989137,                        \
-                          0.06984, -0.192271, 1.12486) * color.rgb;             \
+        color.rgb = mat3( 3.4366066943330784,   -0.79132955559892875, -0.025949899690592673, \
+                         -2.5064521186562699,    1.9836004517922907,  -0.098913714711726442, \
+                          0.069845424323191471, -0.19227089619336198,  1.1248636144023191) * color.rgb; \
         color.rgb = $pq_eotf_inv(color.rgb);
         break;
     }
@@ -538,9 +538,9 @@ void pl_shader_decode_color_ex(pl_shader sh,
 #pragma GLSL                                                                    \
         color.rgb = $hlg_oetf_inv(color.rgb);                                   \
         /* LMS matrix */                                                        \
-        color.rgb = mat3( 3.43661, -0.79133, -0.0259499,                        \
-                         -2.50645,  1.98360, -0.0989137,                        \
-                          0.06984, -0.192271, 1.12486) * color.rgb;             \
+        color.rgb = mat3( 3.4366066943330784,   -0.79132955559892875, -0.025949899690592673, \
+                         -2.5064521186562699,    1.9836004517922907,  -0.098913714711726442, \
+                          0.069845424323191471, -0.19227089619336198,  1.1248636144023191) * color.rgb; \
         color.rgb = $hlg_oetf(color.rgb);
         break;
     }
@@ -550,9 +550,9 @@ void pl_shader_decode_color_ex(pl_shader sh,
         // Dolby Vision always outputs BT.2020-referred HPE LMS, so hard-code
         // the inverse LMS->RGB matrix corresponding to this color space.
         pl_matrix3x3 dovi_lms2rgb = {{
-            { 3.06441879, -2.16597676,  0.10155818},
-            {-0.65612108,  1.78554118, -0.12943749},
-            { 0.01736321, -0.04725154,  1.03004253},
+            { 3.064396767855625,    -2.165961226711146,     0.1015574148869036},
+            {-0.65613130540261551,   1.7855694129834121,   -0.12943951030147041},
+            { 0.017360633500538487, -0.047244531564539943,  1.0298894699757705},
         }};
 
         pl_matrix3x3_mul(&dovi_lms2rgb, &repr->dovi->linear);
@@ -638,22 +638,22 @@ void pl_shader_encode_color_ex(pl_shader sh, const struct pl_color_encode_args *
     switch (repr->sys) {
     case PL_COLOR_SYSTEM_BT_2020_C:
         // Expand R'G'B' to RGB
-        GLSL("vec3 lin = mix(color.rgb * vec3(1.0/4.5),                        \n"
-             "                pow((color.rgb + vec3(0.0993))*vec3(1.0/1.0993), \n"
-             "                    vec3(1.0/0.45)),                             \n"
-             "                lessThanEqual(vec3(0.08145), color.rgb));        \n");
+        GLSL("vec3 lin = mix(color.rgb * vec3(1.0/4.5),                                                 \n"
+             "                pow((color.rgb + vec3(0.09929682680944294))*vec3(1.0/1.0992968268094429), \n"
+             "                    vec3(1.0/0.45)),                                                      \n"
+             "                lessThanEqual(vec3(0.081242858298635133), color.rgb));                    \n");
 
         // Compute Yc from RGB and compress to R'Y'cB'
-        GLSL("color.g = dot(vec3(0.2627, 0.6780, 0.0593), lin);     \n"
-             "color.g = mix(color.g * 4.5,                          \n"
-             "              1.0993 * pow(color.g, 0.45) - 0.0993,   \n"
-             "              0.0181 <= color.g);                     \n");
+        GLSL("color.g = dot(vec3(0.2627, 0.6780, 0.0593), lin);                            \n"
+             "color.g = mix(color.g * 4.5,                                                 \n"
+             "              1.0992968268094429 * pow(color.g, 0.45) - 0.09929682680944294, \n"
+             "              0.018053968510807807 <= color.g);                              \n");
 
         // Compute C'bc and C'rc into color.br
-        GLSL("color.br = color.br - color.gg;                       \n"
-             "color.br *= mix(vec2(1.0/1.5816, 1.0/0.9936),         \n"
-             "                vec2(1.0/1.9404, 1.0/1.7184),         \n"
-             "                lessThanEqual(color.br, vec2(0.0)));  \n");
+        GLSL("color.br = color.br - color.gg;                                        \n"
+             "color.br *= mix(vec2(1.0/1.5819708492989484, 1.0/0.99382959526841756), \n"
+             "                vec2(1.0/1.9403433056341009, 1.0/1.7182419845671139),  \n"
+             "                lessThanEqual(color.br, vec2(0.0)));                   \n");
         break;
 
     case PL_COLOR_SYSTEM_BT_2100_PQ: {
@@ -661,9 +661,9 @@ void pl_shader_encode_color_ex(pl_shader sh, const struct pl_color_encode_args *
         ident_t pq_eotf_inv = sh_pq_eotf_inv(sh, 3);
 #pragma GLSL                                                                    \
         color.rgb = $pq_eotf(color.rgb);                                        \
-        color.rgb = mat3(0.412109, 0.166748, 0.024170,                          \
-                         0.523925, 0.720459, 0.075440,                          \
-                         0.063965, 0.112793, 0.900394) * color.rgb;             \
+        color.rgb = mat3(0.412109375,   0.166748046875, 0.024169921875,         \
+                         0.52392578125, 0.720458984375, 0.075439453125,         \
+                         0.06396484375, 0.11279296875,  0.900390625) * color.rgb; \
         color.rgb = $pq_eotf_inv(color.rgb);
         break;
     }
@@ -673,9 +673,9 @@ void pl_shader_encode_color_ex(pl_shader sh, const struct pl_color_encode_args *
         ident_t hlg_oetf = sh_hlg_oetf(sh, 3);
 #pragma GLSL                                                                    \
         color.rgb = $hlg_oetf_inv(color.rgb);                                   \
-        color.rgb = mat3(0.412109, 0.166748, 0.024170,                          \
-                         0.523925, 0.720459, 0.075440,                          \
-                         0.063965, 0.112793, 0.900394) * color.rgb;             \
+        color.rgb = mat3(0.412109375,   0.166748046875, 0.024169921875,         \
+                         0.52392578125, 0.720458984375, 0.075439453125,         \
+                         0.06396484375, 0.11279296875,  0.900390625) * color.rgb; \
         color.rgb = $hlg_oetf(color.rgb);
         break;
     }
@@ -852,9 +852,11 @@ void pl_shader_linearize(pl_shader sh, const struct pl_color_space *csp)
              VLOG_D, VLOG_C, VLOG_B);
         return;
     case PL_COLOR_TRC_S_LOG1:
-        GLSL("color.rgb = pow(vec3(10.0), (color.rgb - vec3(%f)) * vec3(1.0/%f)) \n"
-             "            - vec3(%f);                                            \n",
-             SLOG_C, SLOG_A, SLOG_B);
+        GLSL("color.rgb = mix((color.rgb - vec3(%f)) * vec3(1.0/5.0),    \n"
+             "    pow(vec3(10.0), (color.rgb - vec3(%f)) * vec3(1.0/%f)) \n"
+             "        - vec3(%f),                                        \n"
+             "    lessThanEqual(vec3(%f), color.rgb));                   \n",
+             SLOG_Q, SLOG_C, SLOG_A, SLOG_B, SLOG_Q);
         return;
     case PL_COLOR_TRC_S_LOG2:
         GLSL("color.rgb = mix((color.rgb - vec3(%f)) * vec3(1.0/%f),      \n"
@@ -953,7 +955,7 @@ void pl_shader_delinearize(pl_shader sh, const struct pl_color_space *csp)
     case PL_COLOR_TRC_PRO_PHOTO:
         GLSL("color.rgb = mix(color.rgb * vec3(16.0),                        \n"
              "                pow(color.rgb, vec3(1.0/1.8)),                 \n"
-             "                lessThanEqual(vec3(0.001953), color.rgb));     \n");
+             "                lessThanEqual(vec3(0.001953125), color.rgb));  \n");
         return;
     case PL_COLOR_TRC_PQ: {
         ident_t pq_eotf_inv = sh_pq_eotf_inv(sh, 3);
@@ -989,8 +991,10 @@ void pl_shader_delinearize(pl_shader sh, const struct pl_color_space *csp)
              VLOG_C / M_LN10, VLOG_B, VLOG_D);
         return;
     case PL_COLOR_TRC_S_LOG1:
-        GLSL("color.rgb = vec3(%f) * log(color.rgb + vec3(%f)) + vec3(%f);\n",
-             SLOG_A / M_LN10, SLOG_B, SLOG_C);
+        GLSL("color.rgb = mix(vec3(5.0) * color.rgb + vec3(%f),                \n"
+             "                vec3(%f) * log(color.rgb + vec3(%f)) + vec3(%f), \n"
+             "                lessThanEqual(vec3(0.0), color.rgb));            \n",
+             SLOG_Q, SLOG_A / M_LN10, SLOG_B, SLOG_C);
         return;
     case PL_COLOR_TRC_S_LOG2:
         GLSL("color.rgb = mix(vec3(%f) * color.rgb + vec3(%f),                \n"
