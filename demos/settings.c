@@ -429,6 +429,7 @@ void update_settings(struct plplay *p, const struct pl_frame *target)
             static const char *interp_algos[PL_FRAME_INTERP_ALGO_COUNT] = {
                 [PL_FRAME_INTERP_GLOBAL_MOTION] = "Global motion",
                 [PL_FRAME_INTERP_VISUALIZE]     = "Visualize motion vectors",
+                [PL_FRAME_INTERP_QUALITY]       = "Visualize quality",
             };
 
             nk_label(nk, "Algorithm", NK_TEXT_LEFT);
@@ -437,7 +438,12 @@ void update_settings(struct plplay *p, const struct pl_frame *target)
 
             nk_label(nk, "Pyramid levels:", NK_TEXT_LEFT);
             auto_property_int(nk, 0, 0, &mpar->pyramid_levels, 16, 1, 1);
-            nk_property_int(nk, "Block size", 1, &mpar->block_size, 64, 1, 1);
+            nk_property_int(nk, "Coarse block size", 2,
+                            &mpar->block_size_coarse, 64, 2, 2);
+            if (mpar->block_size_fine > mpar->block_size_coarse)
+                mpar->block_size_fine = mpar->block_size_coarse;
+            nk_property_int(nk, "Fine block size", 1, &mpar->block_size_fine,
+                            mpar->block_size_coarse, 1, 1);
             nk_property_int(nk, "Coarse search radius", 0,
                             &mpar->search_radius_coarse, 32, 1, 1);
             nk_property_int(nk, "Fine search radius", 0,

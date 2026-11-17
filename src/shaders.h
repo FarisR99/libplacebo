@@ -231,6 +231,7 @@ size_t sh_buf_desc_size(const struct pl_shader_desc *buf_desc);
 #define GLSLF(...) sh_append(sh, SH_BUF_FOOTER, __VA_ARGS__)
 
 // Attach a description to a shader
+void sh_vdescribef(pl_shader sh, const char *fmt, va_list ap);
 void sh_describef(pl_shader sh, const char *fmt, ...)
     PL_PRINTF(2, 3);
 
@@ -315,6 +316,32 @@ static inline void *sh_lookup_obj(pl_shader_obj obj, enum pl_shader_obj_type typ
 //
 // If `temporal` is set, the PRNG will vary across frames.
 ident_t sh_prng(pl_shader sh, bool temporal, ident_t *state);
+
+// Defines a function returning the median of an array of N values of the
+// float vector type of `mask`, per component, and returns its name.
+//
+// Note: Not all values of N are implemented; see `src/shaders.c` for a list.
+ident_t sh_median(pl_shader sh, const int N, uint8_t comps);
+
+// Defines `void f(ivec2 pos, out T v[bw * bh])` which fills `v` with the
+// `bw x bh` edge-clamped texels of the (pre-bound) texture `tex`, starting
+// from the top-left pixel at `pos`, in row-major order.
+ident_t sh_tex_load_block(pl_shader sh, int bw, int bh, uint8_t comps,
+                          ident_t tex, const struct pl_tex_params *tpars);
+
+// Defines `vec4 f(ivec2 pos)`, returning the component `comp` of the 2x2
+// edge-clamped texels of the (pre-bound) texture `tex`, in row-major order.
+ident_t sh_tex_quad(pl_shader sh, uint8_t comp, ident_t tex,
+                    const struct pl_tex_params *tpars);
+
+// Defines `float f(float ref[bw * bh], vec2 pos, float gain, float limit)`
+// which returns the sum of squared differences between the `bw x bh` block
+// `ref`, in row-major order, and the bilinear samples of the component `comp`
+// of the (pre-bound) texture `tex` starting from `pos` (in texels, with texel
+// centres at integers), scaled by `gain`. Returns early, every two rows, once
+// the sum reaches `limit`.
+ident_t sh_block_ssd(pl_shader sh, int bw, int bh, uint8_t comp, ident_t tex,
+                     const struct pl_tex_params *tpars);
 
 // Like `pl_shader_dither` and `pl_shader_error_diffusion`, but quantizing to
 // `steps` steps per unit instead of 2^new_depth - 1

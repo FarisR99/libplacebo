@@ -623,11 +623,16 @@ size_t sh_buf_desc_size(const struct pl_shader_desc *buf_desc)
     return last->layout.offset + last->layout.size;
 }
 
+void sh_vdescribef(pl_shader sh, const char *fmt, va_list ap)
+{
+    sh_describe(sh, pl_vasprintf(sh->info->tmp, fmt, ap));
+}
+
 void sh_describef(pl_shader sh, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    sh_describe(sh, pl_vasprintf(sh->info->tmp, fmt, ap));
+    sh_vdescribef(sh, fmt, ap);
     va_end(ap);
 }
 
@@ -1025,4 +1030,170 @@ ident_t sh_prng(pl_shader sh, bool temporal, ident_t *p_state)
     ident_t res = sh_fresh(sh, "RAND");
     GLSLH("#define "$" ("$"("$"))\n", res, randfun, state);
     return res;
+}
+
+ident_t sh_median(pl_shader sh, const int n, uint8_t comps)
+{
+    ident_t sort2 = sh_fresh(sh, "sort2"), median = sh_fresh(sh, "median9");
+
+#pragma GLSLH                                                                   \
+    void $sort2(inout ${vecType: comps} a, inout ${vecType: comps} b)           \
+    {                                                                           \
+        ${vecType: comps} lo = min(a, b);                                       \
+        b = max(a, b);                                                          \
+        a = lo;                                                                 \
+    }                                                                           \
+
+    switch (n) {
+    case 9:
+#pragma GLSLH                                                                   \
+        ${vecType: comps} $median(${vecType: comps} v[9])                       \
+        {                                                                       \
+            $sort2(v[1], v[2]); $sort2(v[4], v[5]); $sort2(v[7], v[8]);         \
+            $sort2(v[0], v[1]); $sort2(v[3], v[4]); $sort2(v[6], v[7]);         \
+            $sort2(v[1], v[2]); $sort2(v[4], v[5]); $sort2(v[7], v[8]);         \
+            $sort2(v[0], v[3]); $sort2(v[5], v[8]); $sort2(v[4], v[7]);         \
+            $sort2(v[3], v[6]); $sort2(v[1], v[4]); $sort2(v[2], v[5]);         \
+            $sort2(v[4], v[7]); $sort2(v[4], v[2]); $sort2(v[6], v[4]);         \
+            $sort2(v[4], v[2]);                                                 \
+            return v[4];                                                        \
+        }
+        break;
+
+    default:
+        SH_FAIL(sh, "Unsupported median filter size: %d", n);
+        return NULL_IDENT;
+    }
+
+    return median;
+}
+
+ident_t sh_tex_load_block(pl_shader sh, int bw, int bh, uint8_t comps,
+                          ident_t tex, const struct pl_tex_params *tpars)
+{
+    ident_t fn = sh_fresh(sh, "tex_load_block");
+
+#pragma GLSLH                                                                   \
+    void $fn(ivec2 pos, out ${vecType: comps} v[${const int: bw * bh}])         \
+    {                                                                           \
+        ivec2 tex_range = ivec2(${const int: tpars->w - 1},                     \
+                                ${const int: tpars->h - 1});                    \
+        for (int i = 0; i < ${const int: bw * bh}; i++) {                       \
+            ivec2 p = pos + ivec2(i % ${const int: bw}, i / ${const int: bw});  \
+            p = clamp(p, ivec2(0), tex_range);                                  \
+            v[i] = texelFetch($tex, p, 0).${swizzle: comps};                    \
+        }                                                                       \
+    }
+
+    return fn;
+}
+
+ident_t sh_tex_quad(pl_shader sh, uint8_t comp, ident_t tex,
+                    const struct pl_tex_params *tpars)
+{
+    // Gathering from components other than the first requires GLSL 400
+    const bool gather = tpars->format->gatherable &&
+                        (comp == 0 || sh_glsl(sh).version >= 400);
+    const uint8_t mask = 1 << comp;
+    ident_t fn = sh_fresh(sh, "tex_quad");
+
+#pragma GLSLH                                                                   \
+    vec4 $fn(ivec2 pos)                                                         \
+    {                                                                           \
+        @if (gather) {                                                          \
+            vec2 pt = vec2(${const float: 1.0f / tpars->w},                     \
+                           ${const float: 1.0f / tpars->h});                    \
+            @if (comp > 0) {                                                    \
+                return textureGather($tex, vec2(pos + 1) * pt,                  \
+                                     ${const int: comp}).wzxy;                  \
+            @} else {                                                           \
+                return textureGather($tex, vec2(pos + 1) * pt).wzxy;            \
+            @}                                                                  \
+        @} else {                                                               \
+            ivec2 tex_range = ivec2(${const int: tpars->w - 1},                 \
+                                    ${const int: tpars->h - 1});                \
+            ivec2 p0 = clamp(pos, ivec2(0), tex_range);                         \
+            ivec2 p1 = clamp(pos + 1, ivec2(0), tex_range);                     \
+            ivec2 p10 = ivec2(p1.x, p0.y), p01 = ivec2(p0.x, p1.y);             \
+            return vec4(texelFetch($tex, p0,  0).${swizzle: mask},              \
+                        texelFetch($tex, p10, 0).${swizzle: mask},              \
+                        texelFetch($tex, p01, 0).${swizzle: mask},              \
+                        texelFetch($tex, p1,  0).${swizzle: mask});             \
+        @}                                                                      \
+    }
+
+    return fn;
+}
+
+// Defines `void f(ivec2 pos, float fx, out float top[n], out float bot[n])`
+// which fills `top` and `bot` with `n` edge-clamped texels of the rows `pos.y`
+// and `pos.y + 1` of the component `comp` of the (pre-bound) texture `tex`,
+// starting from `pos.x`, each linearly interpolated with its right neighbour
+// by `fx`.
+static ident_t sh_tex_rows(pl_shader sh, int n, uint8_t comp, ident_t tex,
+                           const struct pl_tex_params *tpars)
+{
+    ident_t quad = sh_tex_quad(sh, comp, tex, tpars);
+    ident_t fn = sh_fresh(sh, "tex_rows");
+    const int quads = n / 2 + 1;
+
+#pragma GLSLH                                                                   \
+    void $fn(ivec2 pos, float fx, out float top[${const int: n}],               \
+             out float bot[${const int: n}])                                    \
+    {                                                                           \
+        vec4 q[${const int: quads}];                                            \
+        @for (i < quads)                                                        \
+            q[@i] = $quad(pos + ivec2(@i * 2, 0));                              \
+        @for (x < n) {                                                          \
+            top[@x] = mix(q[@x / 2][@x % 2],                                    \
+                          q[(@x + 1) / 2][(@x + 1) % 2], fx);                   \
+            bot[@x] = mix(q[@x / 2][@x % 2 + 2],                                \
+                          q[(@x + 1) / 2][(@x + 1) % 2 + 2], fx);               \
+        @}                                                                      \
+    }
+
+    return fn;
+}
+
+ident_t sh_block_ssd(pl_shader sh, int bw, int bh, uint8_t comp, ident_t tex,
+                     const struct pl_tex_params *tpars)
+{
+    ident_t rows = sh_tex_rows(sh, bw, comp, tex, tpars);
+    ident_t fn = sh_fresh(sh, "block_ssd");
+
+#pragma GLSLH                                                                   \
+    float $fn(float ref[${const int: bw * bh}], vec2 pos, float gain,           \
+              float limit)                                                      \
+    {                                                                           \
+        /* The samples share the fraction of `pos`: interpolate them from the   \
+         * texels under them, fetched two rows at a time. */                    \
+        vec2 fl = floor(pos), fr = pos - fl;                                    \
+        float top[${const int: bw}], bot[${const int: bw}];                     \
+        float prev[${const int: bw}];                                           \
+        float ssd = 0.0, d;                                                     \
+        @for (y < bh) {                                                         \
+            @if @(y % 2 == 0) {                                                 \
+                @if @(y == 0)                                                   \
+                    $rows(ivec2(fl), fr.x, top, bot);                           \
+                @for (x < bw) {                                                 \
+                    d = ref[@y * ${const int: bw} + @x]                         \
+                      - gain * mix(top[@x], bot[@x], fr.y);                     \
+                    ssd += d * d;                                               \
+                @}                                                              \
+            @} else {                                                           \
+                prev = bot;                                                     \
+                $rows(ivec2(fl) + ivec2(0, @y + 1), fr.x, top, bot);            \
+                @for (x < bw) {                                                 \
+                    d = ref[@y * ${const int: bw} + @x]                         \
+                      - gain * mix(prev[@x], top[@x], fr.y);                    \
+                    ssd += d * d;                                               \
+                @}                                                              \
+                if (ssd >= limit)                                               \
+                    return ssd;                                                 \
+            @}                                                                  \
+        @}                                                                      \
+        return ssd;                                                             \
+    }
+
+    return fn;
 }

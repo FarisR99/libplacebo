@@ -12,7 +12,11 @@ project('libplacebo', ['c', 'cpp'],
     7,
     # API version
     {
-      '393': 'add pl_mpv_user_shader_params.half_precision',
+      '397': 'add pl_mpv_user_shader_params.half_precision',
+      '396': 'add pl_frame_interp_algo PL_FRAME_INTERP_QUALITY',
+      '395': 'add pl_motion_estimate_input.estimate_quality and pl_motion_get_quality',
+      '394': 'replace pl_motion_estimate_params.block_size by block_size_coarse and block_size_fine',
+      '393': 'remove the confidence from the fields of pl_motion_get_flow',
       '392': 'add pl_frame_interp_algo PL_FRAME_INTERP_VISUALIZE',
       '391': 'add pl_render_stage enum value PL_RENDER_STAGE_MOTION',
       '390': 'add pl_frame_interp_input and pl_shader_frame_interp',

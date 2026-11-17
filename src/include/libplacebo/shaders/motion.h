@@ -40,12 +40,18 @@ enum pl_motion_direction {
 // state, as if `pl_motion_reset` had been called.
 struct pl_motion_estimate_params {
     // Side length, in pixels, of the square blocks the search operates on.
-    // Smaller blocks track finer detail at a superlinear cost.
-    int block_size;
+    // Must be even. Smaller blocks track finer detail at a superlinear cost.
+    int block_size_coarse;
+
+    // Side length, in pixels, of the squares that the final flow fields may
+    // be refined to. Must be in the range [1, block_size_coarse]. This is a
+    // hint; the actual resolution of the flow field may be coarser than this,
+    // depending on implementation details.
+    int block_size_fine;
 
     // Number of levels in the coarse-to-fine pyramid, including the full
     // resolution level. 0 picks a value from the input resolution and
-    // `block_size`.
+    // `block_size_coarse`.
     int pyramid_levels;
 
     // Search radius in pixels. `coarse` applies to only the coarsest level of
@@ -57,8 +63,8 @@ struct pl_motion_estimate_params {
 };
 
 #define PL_MOTION_ESTIMATE_DEFAULTS                                            \
-    .block_size = 8, .pyramid_levels = 0, .search_radius_coarse = 4,           \
-    .search_radius_fine = 2,
+    .block_size_coarse = 8, .block_size_fine = 1, .pyramid_levels = 0,         \
+    .search_radius_coarse = 4, .search_radius_fine = 1,
 
 #define pl_motion_estimate_params(...)                                         \
     (&(struct pl_motion_estimate_params) {                                     \
@@ -69,7 +75,7 @@ PL_API extern const struct pl_motion_estimate_params
 
 // Returns the number of blocks `pl_motion_estimate` searches at full
 // resolution, for frames of dimensions `w` x `h`. Returns 0 if the dimensions
-// or `params->block_size` are not positive.
+// or `params->block_size_coarse` are not positive.
 PL_API int pl_motion_num_blocks(int w, int h,
                                 const struct pl_motion_estimate_params *params);
 
@@ -106,6 +112,10 @@ struct pl_motion_estimate_input {
     // it can later be retrieved using `pl_motion_get_global_buf`, or
     // `pl_motion_get_global`.
     bool estimate_global;
+
+    // Optionally estimate the quality of the vectors of each direction. If
+    // true, it can later be retrieved using `pl_motion_get_quality`.
+    bool estimate_quality;
 
     // Persistent state, owned by the caller. May point at a NULL
     // `pl_shader_obj`, in which case it is allocated on first use. Must be
@@ -153,18 +163,31 @@ PL_API void pl_motion_reset(pl_shader_obj state);
 //  - The field's own dimensions are unspecified and should be sampled with
 //    normalized coordinates (motion estimate may be in block granularity).
 //
-// `tex->params` provides the exact dimensions and formats. `params.w` and
-// `params.h` are typically smaller than the source frame dimensions because
-// motion is estimated at a block granularity.
+// `tex->params` provides the exact dimensions and formats. The granularity
+// of the flow field is guaranteed to lie somewhere in the range
+// [block_size_fine, block_size_coarse].
 //
-// Each texel holds `vec3(mv.x, mv.y, confidence)` in its first three
-// components, in a floating point format. `mv.x` and `mv.y` may be
-// fractional, and `confidence` is in the range [0, 1], with 1 meaning high
-// confidence. Any further components are unspecified. Sample the field with
-// `PL_TEX_SAMPLE_NEAREST` (or `texelFetch`).
-// NOTE: the confidence is currently always 1.
+// Each texel holds `vec2(mv.x, mv.y)` in its first two components, in a
+// floating point format. `mv.x` and `mv.y` may be fractional. Any further
+// components are unspecified. Sample the field with `PL_TEX_SAMPLE_NEAREST`
+// (or `texelFetch`).
 PL_API pl_tex pl_motion_get_flow(pl_shader_obj state,
                                  enum pl_motion_direction dir);
+
+// Returns the quality of the flow field of a single direction, or NULL if
+// not available. `dir` must name exactly one direction.
+//
+// Each texel holds, in its first component, an estimate of how trustworthy
+// the vectors of the corresponding flow field are. This is a float in the
+// range [0, 1], with 1 meaning high quality and 0 meaning low quality.
+//
+// The texture is owned by `state`. Do not destroy it, or reference it after
+// `pl_motion_reset` or `pl_motion_estimate`.
+//
+// `tex->params` provides the exact dimensions and formats, which need not
+// match the resolution of the flow field itself.
+PL_API pl_tex pl_motion_get_quality(pl_shader_obj state,
+                                    enum pl_motion_direction dir);
 
 // Returns the buffer holding the global motion vector in the direction `dir`
 // or NULL if no `pl_motion_estimate` call for the current frame pair set
@@ -226,8 +249,13 @@ enum pl_frame_interp_algo {
 
     // Debugging aid: instead of interpolating, draws the forward motion
     // vectors between the two frames with the Middlebury color wheel, on top
-    // of the earlier frame and as opaque as the vectors are confident.
+    // of the earlier frame. Vectors of low quality fade to gray.
     PL_FRAME_INTERP_VISUALIZE,
+
+    // Debugging aid: instead of interpolating, draws the quality of the
+    // forward motion vectors (see `pl_motion_get_quality`), from black for
+    // the lowest to white for the highest.
+    PL_FRAME_INTERP_QUALITY,
 
     PL_FRAME_INTERP_ALGO_COUNT,
 };
