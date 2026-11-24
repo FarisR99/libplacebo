@@ -12,7 +12,12 @@ project('libplacebo', ['c', 'cpp'],
     7,
     # API version
     {
-      '397': 'add pl_mpv_user_shader_params.half_precision',
+      '402': 'add pl_mpv_user_shader_params.half_precision',
+      '401': 'add PL_MOTION_OCCLUSION, pl_motion_get_occlusion and PL_FRAME_INTERP_OCCLUSION',
+      '400': 'add pl_tone_map_constants.spline_shoulder',
+      '399': 'add pl_opengl_swapchain_params.recreate_surface',
+      '398': 'remove pl_motion_global_buf_vars and its accessors',
+      '397': 'replace pl_motion_estimate_input.estimate_global and estimate_quality by features',
       '396': 'add pl_frame_interp_algo PL_FRAME_INTERP_QUALITY',
       '395': 'add pl_motion_estimate_input.estimate_quality and pl_motion_get_quality',
       '394': 'replace pl_motion_estimate_params.block_size by block_size_coarse and block_size_fine',
